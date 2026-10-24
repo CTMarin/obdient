@@ -1,3 +1,5 @@
+use std::convert::From;
+
 #[derive(Debug, Clone, Copy)]
 pub enum Pid {
     EngineCoolantTemperature,
@@ -27,6 +29,39 @@ pub enum Reading {
     EngineSpeed(f32),
     // km/h
     VehicleSpeed(u8),
+}
+
+pub fn parse_response(raw: &str, pid: Pid) -> Option<Vec<u8>> {
+    for line in raw.split('\r') {
+        let clean_line: &str = line.trim().trim_end_matches('>');
+        match clean_line {
+            "NO DATA" | "?" | "UNABLE TO CONNECT" => return None,
+            "SEARCHING..." | "" => continue,
+            l if l.starts_with("BUS INIT") => return None,
+            _ => {}
+        }
+
+        let hex: String = clean_line.split_whitespace().collect();
+        if !hex.len().is_multiple_of(2) || !hex.is_ascii() {
+            continue;
+        }
+
+        let pairs = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
+            .collect::<Result<Vec<u8>, _>>();
+        let bytes: Vec<u8> = match pairs {
+            Ok(bytes) => bytes,
+            Err(_) => continue,
+        };
+
+        match bytes.as_slice() {
+            [0x41, pid_code, rest @ ..] if *pid_code == pid.code() => return Some(rest.to_vec()),
+            _ => {}
+        }
+    }
+
+    None
 }
 
 pub fn decode(pid: Pid, data: &[u8]) -> Option<Reading> {
@@ -179,5 +214,176 @@ mod tests {
 
             assert_eq!(actual, expected, "{pid:?}");
         }
+    }
+
+    #[test]
+    fn given_usual_response_when_parse_response_then_returns_data_bytes() {
+        let expected: Option<Vec<u8>> = Some(vec![0x14, 0x5F]);
+        let actual: Option<Vec<u8>> = parse_response("41 0C 14 5F \r\r>", Pid::EngineSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_response_without_spaces_when_parse_response_then_returns_data_bytes() {
+        let expected: Option<Vec<u8>> = Some(vec![0x14, 0x5F]);
+        let actual: Option<Vec<u8>> = parse_response("410C145F\r\r>", Pid::EngineSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_single_data_byte_response_when_parse_response_then_returns_data_byte() {
+        let expected: Option<Vec<u8>> = Some(vec![0x0A]);
+        let actual: Option<Vec<u8>> = parse_response("41 0D 0A \r\r>", Pid::VehicleSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_two_ecu_responses_when_parse_response_then_returns_first() {
+        let expected: Option<Vec<u8>> = Some(vec![0x0B, 0x90]);
+        let actual: Option<Vec<u8>> =
+            parse_response("41 0C 0B 90 \r41 0C 0B 90 \r\r>", Pid::EngineSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_searching_prefix_when_parse_response_then_skips_it() {
+        let expected: Option<Vec<u8>> = Some(vec![0x14, 0x5F]);
+        let actual: Option<Vec<u8>> =
+            parse_response("SEARCHING...\r41 0C 14 5F \r\r>", Pid::EngineSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_echoed_command_when_parse_response_then_skips_it() {
+        let expected: Option<Vec<u8>> = Some(vec![0x14, 0x5F]);
+        let actual: Option<Vec<u8>> = parse_response("010C\r41 0C 14 5F \r\r>", Pid::EngineSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_linefeeds_when_parse_response_then_returns_data_bytes() {
+        let expected: Option<Vec<u8>> = Some(vec![0x14, 0x5F]);
+        let actual: Option<Vec<u8>> = parse_response("41 0C 14 5F \r\n\r\n>", Pid::EngineSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_lowercase_hex_when_parse_response_then_returns_data_bytes() {
+        let expected: Option<Vec<u8>> = Some(vec![0x14, 0x5F]);
+        let actual: Option<Vec<u8>> = parse_response("41 0c 14 5f \r\r>", Pid::EngineSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_header_without_data_when_parse_response_then_returns_empty_data() {
+        let expected: Option<Vec<u8>> = Some(vec![]);
+        let actual: Option<Vec<u8>> = parse_response("41 0C \r\r>", Pid::EngineSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_no_data_when_parse_response_then_returns_none() {
+        let expected: Option<Vec<u8>> = None;
+        let actual: Option<Vec<u8>> = parse_response("NO DATA\r\r>", Pid::EngineSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_unknown_command_when_parse_response_then_returns_none() {
+        let expected: Option<Vec<u8>> = None;
+        let actual: Option<Vec<u8>> = parse_response("?\r\r>", Pid::EngineSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_unable_to_connect_when_parse_response_then_returns_none() {
+        let expected: Option<Vec<u8>> = None;
+        let actual: Option<Vec<u8>> = parse_response("UNABLE TO CONNECT\r\r>", Pid::EngineSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_searching_then_unable_to_connect_when_parse_response_then_returns_none() {
+        let expected: Option<Vec<u8>> = None;
+        let actual: Option<Vec<u8>> =
+            parse_response("SEARCHING...\rUNABLE TO CONNECT\r\r>", Pid::EngineSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_bus_init_error_when_parse_response_then_returns_none() {
+        let expected: Option<Vec<u8>> = None;
+        let actual: Option<Vec<u8>> = parse_response("BUS INIT: ...ERROR\r\r>", Pid::EngineSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_response_for_other_pid_when_parse_response_then_returns_none() {
+        let expected: Option<Vec<u8>> = None;
+        let actual: Option<Vec<u8>> = parse_response("41 0D 0A \r\r>", Pid::EngineSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_wrong_mode_when_parse_response_then_returns_none() {
+        let expected: Option<Vec<u8>> = None;
+        let actual: Option<Vec<u8>> = parse_response("42 0C 14 5F \r\r>", Pid::EngineSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_odd_length_hex_when_parse_response_then_returns_none() {
+        let expected: Option<Vec<u8>> = None;
+        let actual: Option<Vec<u8>> = parse_response("41 0C 14 5\r\r>", Pid::EngineSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_invalid_hex_when_parse_response_then_returns_none() {
+        let expected: Option<Vec<u8>> = None;
+        let actual: Option<Vec<u8>> = parse_response("41 0C ZZ 5F \r\r>", Pid::EngineSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_non_ascii_bytes_when_parse_response_then_returns_none_without_panicking() {
+        let expected: Option<Vec<u8>> = None;
+        let actual: Option<Vec<u8>> = parse_response("41 0C 1ñ5\r\r>", Pid::EngineSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_only_prompt_when_parse_response_then_returns_none() {
+        let expected: Option<Vec<u8>> = None;
+        let actual: Option<Vec<u8>> = parse_response("\r\r>", Pid::EngineSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_empty_input_when_parse_response_then_returns_none() {
+        let expected: Option<Vec<u8>> = None;
+        let actual: Option<Vec<u8>> = parse_response("", Pid::EngineSpeed);
+
+        assert_eq!(actual, expected);
     }
 }
