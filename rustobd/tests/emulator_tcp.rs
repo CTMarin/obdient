@@ -7,7 +7,9 @@
 use std::time::Duration;
 
 use rustobd::{
+    elm327::Elm327,
     error::TransportError,
+    pid::Pid,
     transport::{Transport, tcp::TcpTransport},
 };
 
@@ -89,4 +91,35 @@ fn given_no_pending_data_when_reading_then_returns_timeout() {
     let result = transport.read(&mut buffer);
 
     assert_eq!(result, Err(TransportError::Timeout));
+}
+
+#[test]
+#[ignore]
+fn given_emulator_when_initialize_then_returns_ok() {
+    let mut elm = Elm327::new(
+        TcpTransport::connect(EMULATOR_ADDRESS, READ_TIMEOUT)
+            .expect("failed to connect to emulator at 127.0.0.1:35000"),
+        READ_TIMEOUT,
+    );
+
+    let expected: bool = true;
+    let actual: bool = elm.initialize().is_ok();
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+#[ignore]
+fn given_initialized_elm_when_reading_vehicle_speed_then_returns_reading() {
+    let mut elm = Elm327::new(
+        TcpTransport::connect(EMULATOR_ADDRESS, READ_TIMEOUT)
+            .expect("failed to connect to emulator at 127.0.0.1:35000"),
+        READ_TIMEOUT,
+    );
+    elm.initialize().expect("failed to initialize emulator");
+
+    let expected: bool = true;
+    let actual: bool = elm.read_pid(Pid::VehicleSpeed).is_ok();
+
+    assert_eq!(actual, expected);
 }

@@ -24,6 +24,10 @@ pub enum ObdError {
     NotEnoughData { expected: usize, got: usize },
     #[error("transport error: {0}")]
     Transport(#[from] TransportError),
+    #[error("response timeout: {0:?}")]
+    ResponseTimeout(String),
+    #[error("unexpected response to command {command}: {response:?}")]
+    UnexpectedResponse { command: String, response: String },
 }
 
 impl ObdError {
@@ -34,9 +38,11 @@ impl ObdError {
             ObdError::Malformed(_)
             | ObdError::BusError(_)
             | ObdError::NotEnoughData { .. }
-            | ObdError::Transport(TransportError::Timeout) => ObdErrorKind::Transient,
+            | ObdError::Transport(TransportError::Timeout)
+            | ObdError::ResponseTimeout(_) => ObdErrorKind::Transient,
             ObdError::Transport(TransportError::Disconnected)
-            | ObdError::Transport(TransportError::Io(_)) => ObdErrorKind::ConnectionLost,
+            | ObdError::Transport(TransportError::Io(_))
+            | ObdError::UnexpectedResponse { .. } => ObdErrorKind::ConnectionLost,
         }
     }
 }
@@ -118,6 +124,26 @@ mod tests {
         let expected: ObdErrorKind = ObdErrorKind::ConnectionLost;
         let actual: ObdErrorKind =
             ObdError::Transport(TransportError::Io(std::io::ErrorKind::ConnectionRefused)).kind();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_response_timeout_when_kind_then_returns_transient() {
+        let expected: ObdErrorKind = ObdErrorKind::Transient;
+        let actual: ObdErrorKind = ObdError::ResponseTimeout(String::new()).kind();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_unexpected_response_when_kind_then_returns_connection_lost() {
+        let expected: ObdErrorKind = ObdErrorKind::ConnectionLost;
+        let actual: ObdErrorKind = ObdError::UnexpectedResponse {
+            command: String::new(),
+            response: String::new(),
+        }
+        .kind();
 
         assert_eq!(actual, expected);
     }

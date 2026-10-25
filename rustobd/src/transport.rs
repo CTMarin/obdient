@@ -1,5 +1,7 @@
 use crate::error::TransportError;
 
+#[cfg(test)]
+pub mod mock;
 pub mod tcp;
 
 pub trait Transport {
