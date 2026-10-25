@@ -207,14 +207,11 @@ mod tests {
     }
 
     #[test]
-    fn given_half_throttle_position_when_decode_then_returns_approximate_value() {
-        let expected: f32 = 50.196;
+    fn given_half_throttle_position_when_decode_then_returns_exact_value() {
+        let expected: Result<Reading, ObdError> = Ok(Reading::ThrottlePosition(50.196_08));
         let actual: Result<Reading, ObdError> = decode(Pid::ThrottlePosition, &[0x80]);
 
-        let Ok(Reading::ThrottlePosition(value)) = actual else {
-            panic!("expected ThrottlePosition, got {actual:?}");
-        };
-        assert!((value - expected).abs() < 0.01);
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -266,6 +263,24 @@ mod tests {
     fn given_single_data_byte_response_when_parse_response_then_returns_data_byte() {
         let expected: Result<Vec<u8>, ObdError> = Ok(vec![0x0A]);
         let actual: Result<Vec<u8>, ObdError> = parse_response("41 0D 0A \r\r>", Pid::VehicleSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_coolant_temperature_response_when_parse_response_then_returns_data_byte() {
+        let expected: Result<Vec<u8>, ObdError> = Ok(vec![0x7B]);
+        let actual: Result<Vec<u8>, ObdError> =
+            parse_response("41 05 7B \r\r>", Pid::EngineCoolantTemperature);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_throttle_position_response_when_parse_response_then_returns_data_byte() {
+        let expected: Result<Vec<u8>, ObdError> = Ok(vec![0x33]);
+        let actual: Result<Vec<u8>, ObdError> =
+            parse_response("41 11 33 \r\r>", Pid::ThrottlePosition);
 
         assert_eq!(actual, expected);
     }
