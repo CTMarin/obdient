@@ -1,4 +1,4 @@
-# rustobd
+# obdient
 
 A small Rust driver for ELM327 OBD-II adapters. It connects to the adapter, runs the usual AT setup and reads live engine data in a loop.
 
@@ -31,7 +31,7 @@ elm -n 35000                       # listens on TCP port 35000
 Then, in another terminal:
 
 ```sh
-cd rustobd
+cd obdient
 cargo run -- --tcp 127.0.0.1:35000
 ```
 
@@ -70,7 +70,7 @@ transport   moves bytes (TCP for now)
 ## Tests
 
 ```sh
-cd rustobd
+cd obdient
 cargo test
 ```
 
@@ -86,7 +86,7 @@ cargo test --test emulator_tcp -- --ignored
 ## Project layout
 
 ```
-rustobd/
+obdient/
 ├── src/
 │   ├── main.rs          CLI
 │   ├── elm327.rs        ELM327 protocol layer
@@ -105,3 +105,7 @@ rustobd/
 - [ ] Connection timeout for Wi-Fi adapters
 - [ ] Try it with a real ELM327 adapter
 - [ ] Run it on my ESP32-S3 talking to the adapter over UART
+
+## License
+
+MIT, see [LICENSE](LICENSE).

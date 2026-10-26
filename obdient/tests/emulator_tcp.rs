@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use rustobd::{
+use obdient::{
     elm327::Elm327,
     error::TransportError,
     pid::Pid,

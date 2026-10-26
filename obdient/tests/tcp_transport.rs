@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-use rustobd::{
+use obdient::{
     error::TransportError,
     transport::{Transport, tcp::TcpTransport},
 };

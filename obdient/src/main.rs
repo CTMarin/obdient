@@ -1,7 +1,7 @@
 use std::{thread::sleep, time::Duration};
 
 use clap::Parser;
-use rustobd::{elm327::Elm327, error::ObdError, pid::Pid, transport::tcp::TcpTransport};
+use obdient::{elm327::Elm327, error::ObdError, pid::Pid, transport::tcp::TcpTransport};
 
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -13,7 +13,7 @@ const PIDS: [Pid; 4] = [
 ];
 
 #[derive(Parser)]
-struct RustOBDArgs {
+struct ObdientArgs {
     /// Adapter address, host:port
     #[arg(long)]
     tcp: String,
@@ -23,7 +23,7 @@ struct RustOBDArgs {
 }
 
 fn main() -> Result<(), ObdError> {
-    let args: RustOBDArgs = RustOBDArgs::parse();
+    let args: ObdientArgs = ObdientArgs::parse();
 
     let tcp_transport: TcpTransport = TcpTransport::connect(&args.tcp, READ_TIMEOUT)?;
     let mut elm327_driver: Elm327<TcpTransport> = Elm327::new(tcp_transport, RESPONSE_TIMEOUT);
