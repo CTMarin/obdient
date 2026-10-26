@@ -1,3 +1,5 @@
+use std::fmt;
+
 use crate::error::ObdError;
 
 const BUS_ERRORS: [&str; 7] = [
@@ -46,6 +48,17 @@ pub enum Reading {
     EngineSpeed(f32),
     /// km/h
     VehicleSpeed(u8),
+}
+
+impl fmt::Display for Reading {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Reading::EngineCoolantTemperature(temperature) => write!(f, "{temperature} °C"),
+            Reading::ThrottlePosition(throttle) => write!(f, "{throttle:.1} %"),
+            Reading::EngineSpeed(rpm) => write!(f, "{rpm:.0} rpm"),
+            Reading::VehicleSpeed(speed) => write!(f, "{speed} km/h"),
+        }
+    }
 }
 
 pub fn parse_response(raw: &str, pid: Pid) -> Result<Vec<u8>, ObdError> {
@@ -457,6 +470,71 @@ mod tests {
     fn given_can_error_when_parse_response_then_returns_bus_error() {
         let expected: Result<Vec<u8>, ObdError> = Err(ObdError::BusError("CAN ERROR".to_string()));
         let actual: Result<Vec<u8>, ObdError> = parse_response("CAN ERROR\r\r>", Pid::EngineSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_engine_speed_with_fraction_when_display_then_rounds_to_integer_rpm() {
+        let expected: String = "1304 rpm".to_string();
+        let actual: String = Reading::EngineSpeed(1303.75).to_string();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_engine_speed_tie_rounding_down_when_display_then_rounds_to_even() {
+        // Rust rounds ties to even
+        let expected: String = "620 rpm".to_string();
+        let actual: String = Reading::EngineSpeed(620.5).to_string();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_engine_speed_tie_rounding_up_when_display_then_rounds_to_even() {
+        let expected: String = "622 rpm".to_string();
+        let actual: String = Reading::EngineSpeed(621.5).to_string();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_vehicle_speed_when_display_then_returns_km_per_hour() {
+        let expected: String = "42 km/h".to_string();
+        let actual: String = Reading::VehicleSpeed(42).to_string();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_negative_coolant_temperature_when_display_then_returns_celsius() {
+        let expected: String = "-40 °C".to_string();
+        let actual: String = Reading::EngineCoolantTemperature(-40).to_string();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_maximum_coolant_temperature_when_display_then_returns_celsius() {
+        let expected: String = "215 °C".to_string();
+        let actual: String = Reading::EngineCoolantTemperature(215).to_string();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_throttle_position_with_fraction_when_display_then_returns_one_decimal() {
+        let expected: String = "50.2 %".to_string();
+        let actual: String = Reading::ThrottlePosition(50.196_08).to_string();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_full_throttle_when_display_then_returns_one_decimal() {
+        let expected: String = "100.0 %".to_string();
+        let actual: String = Reading::ThrottlePosition(100.0).to_string();
 
         assert_eq!(actual, expected);
     }
