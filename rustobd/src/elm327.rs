@@ -48,10 +48,17 @@ impl<T: Transport> Elm327<T> {
     pub fn read_pid(&mut self, pid: Pid) -> Result<Reading, ObdError> {
         let command: String = format!("01{:02X}", pid.code());
         let raw_response: String = self.send_command(&command)?;
-        let data: Vec<u8> = parse_response(&raw_response, pid)?;
-        let reading: Reading = decode(pid, &data)?;
+        let reading_result: Result<Reading, ObdError> =
+            parse_response(&raw_response, pid).and_then(|data| decode(pid, &data));
 
-        Ok(reading)
+        if matches!(
+            reading_result,
+            Err(ObdError::Malformed(_) | ObdError::NotEnoughData { .. })
+        ) {
+            self.desynced = true;
+        }
+
+        reading_result
     }
 
     pub fn send_command(&mut self, command: &str) -> Result<String, ObdError> {
@@ -578,6 +585,64 @@ mod tests {
         let expected: Result<Reading, ObdError> =
             Err(ObdError::Transport(TransportError::Disconnected));
         let actual: Result<Reading, ObdError> = elm.read_pid(Pid::EngineSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    // Noise produced a '>' in the middle of the answer, so the rest stays in the line.
+    fn split_answer_reads() -> Vec<Result<Vec<u8>, TransportError>> {
+        vec![
+            Ok(b"41 0C>".to_vec()),
+            Ok(b" 14 5F \r\r>".to_vec()),
+            Err(TransportError::Timeout),
+            Ok(b"41 0D 0A \r\r>".to_vec()),
+        ]
+    }
+
+    #[test]
+    fn given_early_prompt_in_answer_when_read_pid_then_returns_not_enough_data() {
+        let mut elm: Elm327<MockTransport> = elm(split_answer_reads(), one_second());
+
+        let expected: Result<Reading, ObdError> = Err(ObdError::NotEnoughData {
+            expected: 2,
+            got: 0,
+        });
+        let actual: Result<Reading, ObdError> = elm.read_pid(Pid::EngineSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_early_prompt_in_answer_when_next_read_pid_then_leftover_is_drained() {
+        let mut elm: Elm327<MockTransport> = elm(split_answer_reads(), one_second());
+        let _ = elm.read_pid(Pid::EngineSpeed);
+
+        let expected: Result<Reading, ObdError> = Ok(Reading::VehicleSpeed(10));
+        let actual: Result<Reading, ObdError> = elm.read_pid(Pid::VehicleSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_response_for_other_pid_when_read_pid_then_is_desynced() {
+        let mut elm: Elm327<MockTransport> =
+            elm(vec![Ok(b"41 0D 0A \r\r>".to_vec())], one_second());
+        let _ = elm.read_pid(Pid::EngineSpeed);
+
+        let expected: bool = true;
+        let actual: bool = elm.desynced;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_one_data_byte_for_rpm_when_read_pid_then_is_desynced() {
+        let mut elm: Elm327<MockTransport> =
+            elm(vec![Ok(b"41 0C 14 \r\r>".to_vec())], one_second());
+        let _ = elm.read_pid(Pid::EngineSpeed);
+
+        let expected: bool = true;
+        let actual: bool = elm.desynced;
 
         assert_eq!(actual, expected);
     }
