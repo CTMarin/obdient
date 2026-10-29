@@ -8,4 +8,5 @@ repository = "https://github.com/ctmarin/obdient"
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
+serialport = { version = "4.10.1", default-features = false }
 thiserror = "2.0.21"

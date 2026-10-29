@@ -3,14 +3,19 @@ use std::io::ErrorKind::{
     WouldBlock,
 };
 
+use serialport::ErrorKind::{InvalidInput, Io, NoDevice, Unknown};
+
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum TransportError {
     #[error("timed out waiting for data")]
     Timeout,
     #[error("disconnected from device")]
     Disconnected,
-    #[error("I/O error: {0}")]
-    Io(std::io::ErrorKind),
+    #[error("I/O error ({kind:?}): {message}")]
+    Io {
+        kind: std::io::ErrorKind,
+        message: String,
+    },
 }
 
 impl From<std::io::Error> for TransportError {
@@ -20,7 +25,27 @@ impl From<std::io::Error> for TransportError {
             UnexpectedEof | ConnectionReset | ConnectionAborted | BrokenPipe | NotConnected => {
                 TransportError::Disconnected
             }
-            other => TransportError::Io(other),
+            other => TransportError::Io {
+                kind: other,
+                message: error.to_string(),
+            },
+        }
+    }
+}
+
+impl From<serialport::Error> for TransportError {
+    fn from(error: serialport::Error) -> Self {
+        match error.kind() {
+            NoDevice | Io(std::io::ErrorKind::NotFound) => TransportError::Disconnected,
+            InvalidInput => TransportError::Io {
+                kind: std::io::ErrorKind::InvalidInput,
+                message: error.to_string(),
+            },
+            Unknown => TransportError::Io {
+                kind: std::io::ErrorKind::Other,
+                message: error.to_string(),
+            },
+            Io(kind) => TransportError::from(std::io::Error::from(kind)),
         }
     }
 }
@@ -94,9 +119,72 @@ mod tests {
 
     #[test]
     fn given_io_error_connection_refused_when_converting_then_returns_io() {
-        let expected: TransportError = TransportError::Io(std::io::ErrorKind::ConnectionRefused);
-        let actual: TransportError =
-            TransportError::from(std::io::Error::from(std::io::ErrorKind::ConnectionRefused));
+        let io_error: std::io::Error = std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
+        let expected: TransportError = TransportError::Io {
+            kind: std::io::ErrorKind::ConnectionRefused,
+            message: io_error.to_string(),
+        };
+        let actual: TransportError = TransportError::from(io_error);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_io_error_with_message_when_converting_then_keeps_message() {
+        let io_error: std::io::Error = std::io::Error::other("Not a typewriter");
+        let expected: TransportError = TransportError::Io {
+            kind: std::io::ErrorKind::Other,
+            message: "Not a typewriter".to_string(),
+        };
+        let actual: TransportError = TransportError::from(io_error);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_serialport_no_device_when_converting_then_returns_disconnected() {
+        let serial_error: serialport::Error =
+            serialport::Error::new(serialport::ErrorKind::NoDevice, "no such device");
+        let expected: TransportError = TransportError::Disconnected;
+        let actual: TransportError = TransportError::from(serial_error);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_serialport_invalid_input_when_converting_then_returns_io_invalid_input() {
+        let serial_error: serialport::Error =
+            serialport::Error::new(serialport::ErrorKind::InvalidInput, "invalid baud rate");
+        let expected: TransportError = TransportError::Io {
+            kind: std::io::ErrorKind::InvalidInput,
+            message: "invalid baud rate".to_string(),
+        };
+        let actual: TransportError = TransportError::from(serial_error);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_serialport_unknown_error_when_converting_then_returns_io_other_with_description() {
+        let serial_error: serialport::Error =
+            serialport::Error::new(serialport::ErrorKind::Unknown, "Not a typewriter");
+        let expected: TransportError = TransportError::Io {
+            kind: std::io::ErrorKind::Other,
+            message: "Not a typewriter".to_string(),
+        };
+        let actual: TransportError = TransportError::from(serial_error);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_serialport_io_timed_out_when_converting_then_returns_timeout() {
+        let serial_error: serialport::Error = serialport::Error::new(
+            serialport::ErrorKind::Io(std::io::ErrorKind::TimedOut),
+            "timed out",
+        );
+        let expected: TransportError = TransportError::Timeout;
+        let actual: TransportError = TransportError::from(serial_error);
 
         assert_eq!(actual, expected);
     }

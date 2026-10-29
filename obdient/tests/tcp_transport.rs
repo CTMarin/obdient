@@ -28,6 +28,13 @@ fn listener() -> (TcpListener, String) {
     (listener, address)
 }
 
+fn io_kind<T>(result: Result<T, TransportError>) -> Option<std::io::ErrorKind> {
+    match result {
+        Err(TransportError::Io { kind, .. }) => Some(kind),
+        _ => None,
+    }
+}
+
 #[test]
 fn given_server_sends_bytes_when_reading_then_returns_those_bytes() {
     let (listener, address) = listener();
@@ -137,9 +144,8 @@ fn given_no_listener_when_connecting_then_returns_connection_refused() {
     let (listener, address) = listener();
     drop(listener);
 
-    let expected: Option<TransportError> =
-        Some(TransportError::Io(std::io::ErrorKind::ConnectionRefused));
-    let actual: Option<TransportError> = TcpTransport::connect(&address, READ_TIMEOUT).err();
+    let expected: Option<std::io::ErrorKind> = Some(std::io::ErrorKind::ConnectionRefused);
+    let actual: Option<std::io::ErrorKind> = io_kind(TcpTransport::connect(&address, READ_TIMEOUT));
 
     assert_eq!(actual, expected);
 }
@@ -148,9 +154,9 @@ fn given_no_listener_when_connecting_then_returns_connection_refused() {
 fn given_zero_read_timeout_when_connect_then_returns_invalid_input() {
     let (_listener, address) = listener();
 
-    let expected: Option<TransportError> =
-        Some(TransportError::Io(std::io::ErrorKind::InvalidInput));
-    let actual: Option<TransportError> = TcpTransport::connect(&address, Duration::ZERO).err();
+    let expected: Option<std::io::ErrorKind> = Some(std::io::ErrorKind::InvalidInput);
+    let actual: Option<std::io::ErrorKind> =
+        io_kind(TcpTransport::connect(&address, Duration::ZERO));
 
     assert_eq!(actual, expected);
 }
@@ -163,9 +169,8 @@ fn given_listener_gone_when_reconnect_then_returns_connection_refused() {
     drop(server_socket);
     drop(listener);
 
-    let expected: Result<(), TransportError> =
-        Err(TransportError::Io(std::io::ErrorKind::ConnectionRefused));
-    let actual: Result<(), TransportError> = transport.reconnect();
+    let expected: Option<std::io::ErrorKind> = Some(std::io::ErrorKind::ConnectionRefused);
+    let actual: Option<std::io::ErrorKind> = io_kind(transport.reconnect());
 
     assert_eq!(actual, expected);
 }

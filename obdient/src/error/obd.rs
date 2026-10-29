@@ -41,7 +41,7 @@ impl ObdError {
             | ObdError::Transport(TransportError::Timeout)
             | ObdError::ResponseTimeout(_) => ObdErrorKind::Transient,
             ObdError::Transport(TransportError::Disconnected)
-            | ObdError::Transport(TransportError::Io(_))
+            | ObdError::Transport(TransportError::Io { .. })
             | ObdError::UnexpectedResponse { .. } => ObdErrorKind::ConnectionLost,
         }
     }
@@ -121,9 +121,13 @@ mod tests {
 
     #[test]
     fn given_transport_io_error_when_kind_then_returns_connection_lost() {
-        let expected: ObdErrorKind = ObdErrorKind::ConnectionLost;
-        let actual: ObdErrorKind =
-            ObdError::Transport(TransportError::Io(std::io::ErrorKind::ConnectionRefused)).kind();
+        let io_error: std::io::Error = std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
+
+        let expected: TransportError = TransportError::Io {
+            kind: std::io::ErrorKind::ConnectionRefused,
+            message: io_error.to_string(),
+        };
+        let actual: TransportError = TransportError::from(io_error);
 
         assert_eq!(actual, expected);
     }
