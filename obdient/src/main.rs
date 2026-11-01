@@ -3,8 +3,9 @@ use std::{thread::sleep, time::Duration};
 use clap::{ArgGroup, Parser};
 use obdient::{
     elm327::Elm327,
-    error::ObdError,
+    error::{ObdError, ObdErrorKind},
     pid::Pid,
+    poller::{CycleReport, Poller, policy::RetryPolicy},
     transport::{Transport, serial::SerialTransport, tcp::TcpTransport},
 };
 
@@ -58,15 +59,32 @@ fn run<T: Transport>(transport: T, interval_ms: u64) -> Result<(), ObdError> {
     let mut elm327_driver: Elm327<T> = Elm327::new(transport, RESPONSE_TIMEOUT);
 
     elm327_driver.initialize()?;
+    let mut poller: Poller<T> = Poller::new(elm327_driver, PIDS.to_vec(), RetryPolicy::default());
 
-    loop {
-        for pid in PIDS {
-            match elm327_driver.read_pid(pid) {
-                Ok(reading) => println!("{}", reading),
-                Err(error) => eprintln!("PID {:?}: {}", pid, error),
+    while poller.has_active_pids() {
+        match poller.poll_cycle() {
+            Ok(report) => print_report(&report),
+            Err(error) if error.kind() == ObdErrorKind::VehicleUnavailable => {
+                eprintln!("{error}")
             }
+            Err(error) => return Err(error),
         }
-        println!("----------------");
         sleep(Duration::from_millis(interval_ms));
     }
+
+    eprintln!("no PIDs left to poll");
+    Ok(())
+}
+
+fn print_report(report: &CycleReport) {
+    for reading in &report.readings {
+        println!("{reading}");
+    }
+    for (pid, error) in &report.failures {
+        eprintln!("PID {pid:?}: {error}");
+    }
+    for pid in &report.newly_unavailable {
+        eprintln!("PID {pid:?}: marked unavailable")
+    }
+    println!("----------------")
 }

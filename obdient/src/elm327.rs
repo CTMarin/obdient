@@ -114,6 +114,11 @@ impl<T: Transport> Elm327<T> {
             }
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn transport(&self) -> &T {
+        &self.transport
+    }
 }
 
 #[cfg(test)]

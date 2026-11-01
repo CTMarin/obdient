@@ -12,7 +12,7 @@ const BUS_ERRORS: [&str; 7] = [
     "STOPPED",
 ];
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pid {
     EngineCoolantTemperature,
     ThrottlePosition,

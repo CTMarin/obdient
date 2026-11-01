@@ -28,12 +28,16 @@ pub enum ObdError {
     ResponseTimeout(String),
     #[error("unexpected response to command {command}: {response:?}")]
     UnexpectedResponse { command: String, response: String },
+    #[error("no PID answered in this cycle, vehicle is not responding")]
+    NoVehicleResponse,
 }
 
 impl ObdError {
     pub fn kind(&self) -> ObdErrorKind {
         match self {
-            ObdError::UnableToConnect => ObdErrorKind::VehicleUnavailable,
+            ObdError::UnableToConnect | ObdError::NoVehicleResponse => {
+                ObdErrorKind::VehicleUnavailable
+            }
             ObdError::NoData | ObdError::UnknownCommand => ObdErrorKind::PidUnavailable,
             ObdError::Malformed(_)
             | ObdError::BusError(_)
@@ -55,6 +59,14 @@ mod tests {
     fn given_unable_to_connect_when_kind_then_returns_vehicle_unavailable() {
         let expected: ObdErrorKind = ObdErrorKind::VehicleUnavailable;
         let actual: ObdErrorKind = ObdError::UnableToConnect.kind();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_no_vehicle_response_when_kind_then_returns_vehicle_unavailable() {
+        let expected: ObdErrorKind = ObdErrorKind::VehicleUnavailable;
+        let actual: ObdErrorKind = ObdError::NoVehicleResponse.kind();
 
         assert_eq!(actual, expected);
     }
