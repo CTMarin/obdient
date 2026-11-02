@@ -1,9 +1,9 @@
-use std::thread::sleep;
+use std::{thread::sleep, time::Duration};
 
 use crate::{
     elm327::Elm327,
     error::{ObdError, ObdErrorKind},
-    pid::{Pid, Reading},
+    pid::{Pid, Reading, SupportedPidsMask},
     poller::policy::RetryPolicy,
     transport::Transport,
 };
@@ -88,6 +88,30 @@ impl<T: Transport> Poller<T> {
     }
 }
 
+pub fn wait_for_supported_pids<T: Transport>(
+    elm327: &mut Elm327<T>,
+    retry_interval: Duration,
+) -> Result<SupportedPidsMask, ObdError> {
+    loop {
+        match elm327.read_supported_pids() {
+            Ok(supported) => return Ok(supported),
+            Err(error) if should_wait_for_vehicle(&error) => {
+                eprintln!("waiting for vehicle: {error}");
+                sleep(retry_interval);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn should_wait_for_vehicle(error: &ObdError) -> bool {
+    *error == ObdError::NoData
+        || matches!(
+            error.kind(),
+            ObdErrorKind::Transient | ObdErrorKind::VehicleUnavailable
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -100,8 +124,11 @@ mod tests {
         reads: Vec<Result<Vec<u8>, TransportError>>,
         pids: Vec<Pid>,
     ) -> Poller<MockTransport> {
-        let elm327: Elm327<MockTransport> =
-            Elm327::new(MockTransport::new(reads), Duration::from_secs(1));
+        let elm327: Elm327<MockTransport> = Elm327::new(
+            MockTransport::new(reads),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        );
         let policy: RetryPolicy = RetryPolicy {
             max_attempts: 3,
             initial_backoff: Duration::ZERO,
@@ -364,6 +391,81 @@ mod tests {
 
         let expected: &[u8] = b"010C\r010D\r010D\r";
         let actual: &[u8] = poller.elm327.transport().written();
+
+        assert_eq!(actual, expected);
+    }
+
+    fn elm327(reads: Vec<Result<Vec<u8>, TransportError>>) -> Elm327<MockTransport> {
+        Elm327::new(
+            MockTransport::new(reads),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+    }
+
+    #[test]
+    fn given_no_data_then_valid_response_when_wait_for_supported_pids_then_returns_mask() {
+        let mut elm327: Elm327<MockTransport> = elm327(vec![
+            Ok(b"NO DATA\r\r>".to_vec()),
+            Ok(b"41 00 98 3A 80 12 \r\r>".to_vec()),
+        ]);
+
+        let supported: SupportedPidsMask =
+            wait_for_supported_pids(&mut elm327, Duration::ZERO).unwrap();
+
+        assert!(supported.contains(Pid::EngineSpeed));
+        assert_eq!(elm327.transport().written(), b"0100\r0100\r");
+    }
+
+    #[test]
+    fn given_bus_error_then_valid_response_when_wait_for_supported_pids_then_returns_mask() {
+        let mut elm327: Elm327<MockTransport> = elm327(vec![
+            Ok(b"CAN ERROR\r\r>".to_vec()),
+            Ok(b"41 00 98 3A 80 12 \r\r>".to_vec()),
+        ]);
+
+        let supported: SupportedPidsMask =
+            wait_for_supported_pids(&mut elm327, Duration::ZERO).unwrap();
+
+        assert!(supported.contains(Pid::EngineSpeed));
+        assert_eq!(elm327.transport().written(), b"0100\r0100\r");
+    }
+
+    #[test]
+    fn given_unable_to_connect_then_valid_response_when_wait_for_supported_pids_then_returns_mask()
+    {
+        let mut elm327: Elm327<MockTransport> = elm327(vec![
+            Ok(b"UNABLE TO CONNECT\r\r>".to_vec()),
+            Ok(b"41 00 98 3A 80 12 \r\r>".to_vec()),
+        ]);
+
+        let supported: SupportedPidsMask =
+            wait_for_supported_pids(&mut elm327, Duration::ZERO).unwrap();
+
+        assert!(supported.contains(Pid::EngineSpeed));
+        assert_eq!(elm327.transport().written(), b"0100\r0100\r");
+    }
+
+    #[test]
+    fn given_unknown_command_when_wait_for_supported_pids_then_returns_error_without_retry() {
+        let mut elm327: Elm327<MockTransport> = elm327(vec![Ok(b"?\r\r>".to_vec())]);
+
+        let expected: Result<SupportedPidsMask, ObdError> = Err(ObdError::UnknownCommand);
+        let actual: Result<SupportedPidsMask, ObdError> =
+            wait_for_supported_pids(&mut elm327, Duration::ZERO);
+
+        assert_eq!(actual, expected);
+        assert_eq!(elm327.transport().written(), b"0100\r");
+    }
+
+    #[test]
+    fn given_disconnected_transport_when_wait_for_supported_pids_then_returns_transport_error() {
+        let mut elm327: Elm327<MockTransport> = elm327(vec![Err(TransportError::Disconnected)]);
+
+        let expected: Result<SupportedPidsMask, ObdError> =
+            Err(ObdError::Transport(TransportError::Disconnected));
+        let actual: Result<SupportedPidsMask, ObdError> =
+            wait_for_supported_pids(&mut elm327, Duration::ZERO);
 
         assert_eq!(actual, expected);
     }

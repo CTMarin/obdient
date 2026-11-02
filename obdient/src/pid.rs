@@ -18,6 +18,7 @@ pub enum Pid {
     ThrottlePosition,
     EngineSpeed,
     VehicleSpeed,
+    FuelTankLevel,
 }
 
 impl Pid {
@@ -27,13 +28,17 @@ impl Pid {
             Pid::ThrottlePosition => 0x11,
             Pid::EngineSpeed => 0x0C,
             Pid::VehicleSpeed => 0x0D,
+            Pid::FuelTankLevel => 0x2F,
         }
     }
 
     pub fn data_len(self) -> usize {
         match self {
             Pid::EngineSpeed => 2,
-            Pid::EngineCoolantTemperature | Pid::ThrottlePosition | Pid::VehicleSpeed => 1,
+            Pid::EngineCoolantTemperature
+            | Pid::ThrottlePosition
+            | Pid::VehicleSpeed
+            | Pid::FuelTankLevel => 1,
         }
     }
 }
@@ -48,6 +53,8 @@ pub enum Reading {
     EngineSpeed(f32),
     /// km/h
     VehicleSpeed(u8),
+    /// %
+    FuelTankLevel(f32),
 }
 
 impl fmt::Display for Reading {
@@ -57,17 +64,55 @@ impl fmt::Display for Reading {
             Reading::ThrottlePosition(throttle) => write!(f, "{throttle:.1} %"),
             Reading::EngineSpeed(rpm) => write!(f, "{rpm:.0} rpm"),
             Reading::VehicleSpeed(speed) => write!(f, "{speed} km/h"),
+            Reading::FuelTankLevel(fuel) => write!(f, "{fuel:.1} %"),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SupportedPidsMask([u32; 8]);
+
+impl SupportedPidsMask {
+    pub fn contains(self, pid: Pid) -> bool {
+        let offset: usize = usize::from(pid.code() - 1);
+        self.0[offset / 32] & (1u32 << (31 - offset % 32)) != 0
+    }
+
+    pub fn set_range(&mut self, base_code: u8, range_mask: u32) {
+        self.0[usize::from(base_code) / 0x20] = range_mask;
     }
 }
 
 pub fn parse_response(raw: &str, pid: Pid) -> Result<Vec<u8>, ObdError> {
     raw.split('\r')
-        .find_map(|line| parse_line(line, pid))
+        .find_map(|line| parse_line(line, pid.code()))
         .unwrap_or_else(|| Err(ObdError::Malformed(raw.to_string())))
 }
 
-fn parse_line(line: &str, pid: Pid) -> Option<Result<Vec<u8>, ObdError>> {
+pub fn parse_supported_pids(raw: &str, base_code: u8) -> Result<u32, ObdError> {
+    let mut result: Option<u32> = None;
+
+    for line in raw.split('\r') {
+        if let Some(line_result) = parse_line(line, base_code) {
+            let line_mask: u32 = range_mask_from_bytes(&line_result?)?;
+            result = Some(result.unwrap_or(0) | line_mask);
+        }
+    }
+
+    result.ok_or_else(|| ObdError::Malformed(raw.to_string()))
+}
+
+fn range_mask_from_bytes(data: &[u8]) -> Result<u32, ObdError> {
+    match data {
+        [a, b, c, d, ..] => Ok(u32::from_be_bytes([*a, *b, *c, *d])),
+        _ => Err(ObdError::NotEnoughData {
+            expected: 4,
+            got: data.len(),
+        }),
+    }
+}
+
+fn parse_line(line: &str, code: u8) -> Option<Result<Vec<u8>, ObdError>> {
     let clean_line: &str = line.trim().trim_end_matches('>');
     match clean_line {
         "NO DATA" => Some(Err(ObdError::NoData)),
@@ -77,11 +122,11 @@ fn parse_line(line: &str, pid: Pid) -> Option<Result<Vec<u8>, ObdError>> {
         l if BUS_ERRORS.iter().any(|e| l.starts_with(e)) => {
             Some(Err(ObdError::BusError(l.to_string())))
         }
-        data => parse_data_line(data, pid).map(Ok),
+        data => parse_data_line(data, code).map(Ok),
     }
 }
 
-fn parse_data_line(line: &str, pid: Pid) -> Option<Vec<u8>> {
+fn parse_data_line(line: &str, code: u8) -> Option<Vec<u8>> {
     let hex: String = Some(line.split_whitespace().collect::<String>())
         .filter(|h| h.is_ascii() && h.len().is_multiple_of(2))?;
 
@@ -92,7 +137,7 @@ fn parse_data_line(line: &str, pid: Pid) -> Option<Vec<u8>> {
         .ok()?;
 
     match bytes.as_slice() {
-        [0x41, pid_code, rest @ ..] if *pid_code == pid.code() => Some(rest.to_vec()),
+        [0x41, pid_code, rest @ ..] if *pid_code == code => Some(rest.to_vec()),
         _ => None,
     }
 }
@@ -102,6 +147,7 @@ pub fn decode(pid: Pid, data: &[u8]) -> Result<Reading, ObdError> {
         (Pid::ThrottlePosition, [a, ..]) => {
             Ok(Reading::ThrottlePosition(100.0 * f32::from(*a) / 255.0))
         }
+        (Pid::FuelTankLevel, [a, ..]) => Ok(Reading::FuelTankLevel(100.0 * f32::from(*a) / 255.0)),
         (Pid::EngineCoolantTemperature, [a, ..]) => {
             Ok(Reading::EngineCoolantTemperature(i16::from(*a) - 40))
         }
@@ -535,6 +581,135 @@ mod tests {
     fn given_full_throttle_when_display_then_returns_one_decimal() {
         let expected: String = "100.0 %".to_string();
         let actual: String = Reading::ThrottlePosition(100.0).to_string();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_single_ecu_when_parse_supported_pids_then_returns_mask() {
+        let expected: Result<u32, ObdError> = Ok(0x983A_8013);
+        let actual: Result<u32, ObdError> = parse_supported_pids("41 00 98 3A 80 13\r\r>", 0x00);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_multiple_ecus_when_parse_supported_pids_then_merges_masks() {
+        let raw: &str = "41 00 98 3A 80 13\r41 00 00 00 40 00\r\r>";
+        let expected: Result<u32, ObdError> = Ok(0x983A_C013);
+        let actual: Result<u32, ObdError> = parse_supported_pids(raw, 0x00);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_later_range_when_parse_supported_pids_then_returns_mask() {
+        let expected: Result<u32, ObdError> = Ok(0x8000_0000);
+        let actual: Result<u32, ObdError> = parse_supported_pids("41 20 80 00 00 00\r\r>", 0x20);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_other_range_when_parse_supported_pids_then_returns_malformed() {
+        let raw: &str = "41 20 80 00 00 00\r\r>";
+        let expected: Result<u32, ObdError> = Err(ObdError::Malformed(raw.to_string()));
+        let actual: Result<u32, ObdError> = parse_supported_pids(raw, 0x00);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_no_data_when_parse_supported_pids_then_returns_no_data() {
+        let expected: Result<u32, ObdError> = Err(ObdError::NoData);
+        let actual: Result<u32, ObdError> = parse_supported_pids("NO DATA\r\r>", 0x00);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_error_after_data_when_parse_supported_pids_then_returns_error() {
+        let expected: Result<u32, ObdError> = Err(ObdError::UnknownCommand);
+        let actual: Result<u32, ObdError> = parse_supported_pids("41 00 98 3A 80 13\r?\r\r>", 0x00);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_short_data_when_parse_supported_pids_then_returns_not_enough_data() {
+        let expected: Result<u32, ObdError> = Err(ObdError::NotEnoughData {
+            expected: 4,
+            got: 2,
+        });
+        let actual: Result<u32, ObdError> = parse_supported_pids("41 00 98 3A\r\r>", 0x00);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_mask_when_contains_then_checks_pid_bit() {
+        let mut supported: SupportedPidsMask = SupportedPidsMask::default();
+        supported.set_range(0x00, 0x983A_8013);
+
+        assert!(supported.contains(Pid::EngineCoolantTemperature));
+        assert!(supported.contains(Pid::ThrottlePosition));
+        assert!(supported.contains(Pid::EngineSpeed));
+        assert!(supported.contains(Pid::VehicleSpeed));
+    }
+
+    #[test]
+    fn given_empty_mask_when_contains_then_returns_false() {
+        let supported: SupportedPidsMask = SupportedPidsMask::default();
+
+        assert!(!supported.contains(Pid::EngineSpeed));
+    }
+
+    #[test]
+    fn given_later_range_when_contains_then_finds_pid() {
+        let mut supported: SupportedPidsMask = SupportedPidsMask::default();
+        supported.set_range(0x20, 0x0002_0000);
+
+        assert!(supported.contains(Pid::FuelTankLevel));
+        assert!(!supported.contains(Pid::EngineSpeed));
+    }
+
+    #[test]
+    fn given_minimum_fuel_tank_level_when_decode_then_returns_zero() {
+        let expected: Result<Reading, ObdError> = Ok(Reading::FuelTankLevel(0.0));
+        let actual: Result<Reading, ObdError> = decode(Pid::FuelTankLevel, &[0x00]);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_half_fuel_tank_level_when_decode_then_returns_exact_value() {
+        let expected: Result<Reading, ObdError> = Ok(Reading::FuelTankLevel(50.196_08));
+        let actual: Result<Reading, ObdError> = decode(Pid::FuelTankLevel, &[0x80]);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_maximum_fuel_tank_level_when_decode_then_returns_maximum() {
+        let expected: Result<Reading, ObdError> = Ok(Reading::FuelTankLevel(100.0));
+        let actual: Result<Reading, ObdError> = decode(Pid::FuelTankLevel, &[0xFF]);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_fuel_tank_level_response_when_parse_response_then_returns_data_byte() {
+        let expected: Result<Vec<u8>, ObdError> = Ok(vec![0x80]);
+        let actual: Result<Vec<u8>, ObdError> =
+            parse_response("41 2F 80 \r\r>", Pid::FuelTankLevel);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_fuel_tank_level_with_fraction_when_display_then_returns_one_decimal() {
+        let expected: String = "50.2 %".to_string();
+        let actual: String = Reading::FuelTankLevel(50.196_08).to_string();
 
         assert_eq!(actual, expected);
     }

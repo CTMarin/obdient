@@ -4,18 +4,21 @@ use clap::{ArgGroup, Parser};
 use obdient::{
     elm327::Elm327,
     error::{ObdError, ObdErrorKind},
-    pid::Pid,
-    poller::{CycleReport, Poller, policy::RetryPolicy},
+    pid::{Pid, SupportedPidsMask},
+    poller::{CycleReport, Poller, policy::RetryPolicy, wait_for_supported_pids},
     transport::{Transport, serial::SerialTransport, tcp::TcpTransport},
 };
 
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
-const PIDS: [Pid; 4] = [
+const SEARCH_TIMEOUT: Duration = Duration::from_secs(15);
+const VEHICLE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+const PIDS: [Pid; 5] = [
     Pid::EngineSpeed,
     Pid::VehicleSpeed,
     Pid::EngineCoolantTemperature,
     Pid::ThrottlePosition,
+    Pid::FuelTankLevel,
 ];
 
 #[derive(Parser)]
@@ -56,10 +59,20 @@ fn main() -> Result<(), ObdError> {
 }
 
 fn run<T: Transport>(transport: T, interval_ms: u64) -> Result<(), ObdError> {
-    let mut elm327_driver: Elm327<T> = Elm327::new(transport, RESPONSE_TIMEOUT);
+    let mut elm327_driver: Elm327<T> = Elm327::new(transport, RESPONSE_TIMEOUT, SEARCH_TIMEOUT);
 
     elm327_driver.initialize()?;
-    let mut poller: Poller<T> = Poller::new(elm327_driver, PIDS.to_vec(), RetryPolicy::default());
+
+    let supported_pids_mask: SupportedPidsMask =
+        wait_for_supported_pids(&mut elm327_driver, VEHICLE_RETRY_INTERVAL)?;
+    let (supported_pids, unsupported_pids): (Vec<Pid>, Vec<Pid>) = PIDS
+        .into_iter()
+        .partition(|pid| supported_pids_mask.contains(*pid));
+    for pid in unsupported_pids {
+        eprintln!("PID {pid:?}: not supported by vehicle")
+    }
+
+    let mut poller: Poller<T> = Poller::new(elm327_driver, supported_pids, RetryPolicy::default());
 
     while poller.has_active_pids() {
         match poller.poll_cycle() {

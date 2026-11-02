@@ -2,10 +2,11 @@ use std::time::{Duration, Instant};
 
 use crate::{
     error::{ObdError, TransportError},
-    pid::{Pid, Reading, decode, parse_response},
+    pid::{Pid, Reading, SupportedPidsMask, decode, parse_response, parse_supported_pids},
     transport::Transport,
 };
 
+const SEARCH_MARKER: &[u8] = b"SEARCHING";
 const MAX_RESPONSE_LEN: usize = 256;
 const READ_CHUNK_SIZE: usize = 64;
 const INIT_SEQUENCE: [(&str, &str); 5] = [
@@ -19,15 +20,19 @@ const INIT_SEQUENCE: [(&str, &str); 5] = [
 pub struct Elm327<T: Transport> {
     transport: T,
     response_timeout: Duration,
+    search_timeout: Duration,
     desynced: bool,
+    prompt_pending: bool,
 }
 
 impl<T: Transport> Elm327<T> {
-    pub fn new(transport: T, response_timeout: Duration) -> Self {
+    pub fn new(transport: T, response_timeout: Duration, search_timeout: Duration) -> Self {
         Self {
             transport,
             response_timeout,
             desynced: false,
+            prompt_pending: false,
+            search_timeout,
         }
     }
 
@@ -45,18 +50,44 @@ impl<T: Transport> Elm327<T> {
         Ok(())
     }
 
+    pub fn read_supported_pids(&mut self) -> Result<SupportedPidsMask, ObdError> {
+        let mut supported: SupportedPidsMask = SupportedPidsMask::default();
+        let mut base_code: u8 = 0x00;
+
+        loop {
+            let mask: u32 = match self.read_supported_range(base_code) {
+                Ok(range_mask) => range_mask,
+                Err(ObdError::NoData) if base_code > 0x00 => return Ok(supported),
+                Err(error) => return Err(error),
+            };
+
+            supported.set_range(base_code, mask);
+
+            if mask & 1 == 0 || base_code == 0xE0 {
+                return Ok(supported);
+            }
+
+            base_code += 0x20;
+        }
+    }
+
+    fn read_supported_range(&mut self, base_code: u8) -> Result<u32, ObdError> {
+        let command: String = format!("01{base_code:02X}");
+        let raw_response: String = self.send_command(&command)?;
+        let range_result: Result<u32, ObdError> = parse_supported_pids(&raw_response, base_code);
+
+        self.flag_corrupt_response(&range_result);
+
+        range_result
+    }
+
     pub fn read_pid(&mut self, pid: Pid) -> Result<Reading, ObdError> {
         let command: String = format!("01{:02X}", pid.code());
         let raw_response: String = self.send_command(&command)?;
         let reading_result: Result<Reading, ObdError> =
             parse_response(&raw_response, pid).and_then(|data| decode(pid, &data));
 
-        if matches!(
-            reading_result,
-            Err(ObdError::Malformed(_) | ObdError::NotEnoughData { .. })
-        ) {
-            self.desynced = true;
-        }
+        self.flag_corrupt_response(&reading_result);
 
         reading_result
     }
@@ -67,22 +98,46 @@ impl<T: Transport> Elm327<T> {
         }
         let response: Result<String, ObdError> = self.exchange(command);
         self.desynced = response.is_err();
+        self.prompt_pending = response.is_err();
 
         response
     }
 
+    fn flag_corrupt_response<V>(&mut self, result: &Result<V, ObdError>) {
+        if matches!(
+            result,
+            Err(ObdError::Malformed(_) | ObdError::NotEnoughData { .. })
+        ) {
+            self.desynced = true;
+        }
+    }
+
     fn drain(&mut self) -> Result<(), ObdError> {
+        let mut buf: [u8; READ_CHUNK_SIZE] = [0u8; READ_CHUNK_SIZE];
         let deadline: Instant = Instant::now() + self.response_timeout;
         loop {
-            match self.transport.read(&mut [0u8; READ_CHUNK_SIZE]) {
-                Ok(_) => {}
-                Err(TransportError::Timeout) => return Ok(()),
+            match self.transport.read(&mut buf) {
+                Ok(read_bytes_len) => {
+                    if buf[..read_bytes_len].contains(&b'>') {
+                        self.prompt_pending = false;
+                    }
+                }
+                Err(TransportError::Timeout) if !self.prompt_pending => return Ok(()),
+                // A silent line at the deadline means the prompt was lost: give up waiting.
+                Err(TransportError::Timeout) if Instant::now() >= deadline => return Ok(()),
+                Err(TransportError::Timeout) => continue,
                 Err(error) => return Err(error.into()),
             }
             if Instant::now() >= deadline {
                 return Err(ObdError::ResponseTimeout(String::new()));
             }
         }
+    }
+
+    fn is_searching(response_bytes: &[u8]) -> bool {
+        response_bytes
+            .windows(SEARCH_MARKER.len())
+            .any(|window| window == SEARCH_MARKER)
     }
 
     fn as_text(bytes: &[u8]) -> String {
@@ -94,7 +149,7 @@ impl<T: Transport> Elm327<T> {
 
         self.transport
             .write_all(format!("{command}\r").as_bytes())?;
-        let deadline: Instant = Instant::now() + self.response_timeout;
+        let started_at: Instant = Instant::now();
         let mut response_bytes: Vec<u8> = vec![];
 
         loop {
@@ -109,7 +164,13 @@ impl<T: Transport> Elm327<T> {
             if response_bytes.len() > MAX_RESPONSE_LEN {
                 return Err(ObdError::Malformed(Self::as_text(&response_bytes)));
             }
-            if Instant::now() >= deadline {
+
+            let timeout: Duration = if Self::is_searching(&response_bytes) {
+                self.search_timeout
+            } else {
+                self.response_timeout
+            };
+            if started_at.elapsed() >= timeout {
                 return Err(ObdError::ResponseTimeout(Self::as_text(&response_bytes)));
             }
         }
@@ -130,7 +191,7 @@ mod tests {
         reads: Vec<Result<Vec<u8>, TransportError>>,
         response_timeout: Duration,
     ) -> Elm327<MockTransport> {
-        Elm327::new(MockTransport::new(reads), response_timeout)
+        Elm327::new(MockTransport::new(reads), response_timeout, one_second())
     }
 
     fn one_second() -> Duration {
@@ -400,6 +461,121 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    #[test]
+    fn given_zero_timeout_and_searching_when_send_command_then_waits_for_prompt() {
+        let mut elm: Elm327<MockTransport> = elm(
+            vec![
+                Ok(b"SEARCHING...".to_vec()),
+                Err(TransportError::Timeout),
+                Ok(b"41 00 BE 3F A8 13 \r\r>".to_vec()),
+            ],
+            Duration::ZERO,
+        );
+
+        let expected: Result<String, ObdError> =
+            Ok("SEARCHING...41 00 BE 3F A8 13 \r\r>".to_string());
+        let actual: Result<String, ObdError> = elm.send_command("0100");
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_marker_split_in_chunks_when_send_command_then_returns_joined_response() {
+        let mut elm: Elm327<MockTransport> = elm(
+            vec![
+                Ok(b"SEARCH".to_vec()),
+                Ok(b"ING...".to_vec()),
+                Ok(b"NO DATA\r\r>".to_vec()),
+            ],
+            one_second(),
+        );
+
+        let expected: Result<String, ObdError> = Ok("SEARCHING...NO DATA\r\r>".to_string());
+        let actual: Result<String, ObdError> = elm.send_command("0100");
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_partial_response_without_marker_when_is_searching_then_returns_false() {
+        let expected: bool = false;
+        let actual: bool = Elm327::<MockTransport>::is_searching(b"SEARCH");
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_failed_command_when_send_command_then_prompt_is_pending() {
+        let mut elm: Elm327<MockTransport> =
+            elm(vec![Err(TransportError::Disconnected)], one_second());
+        let _ = elm.send_command("0100");
+
+        let expected: bool = true;
+        let actual: bool = elm.prompt_pending;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_corrupt_response_when_read_pid_then_prompt_is_not_pending() {
+        let mut elm: Elm327<MockTransport> =
+            elm(vec![Ok(b"41 0D 0A \r\r>".to_vec())], one_second());
+        let _ = elm.read_pid(Pid::EngineSpeed);
+
+        let expected: bool = false;
+        let actual: bool = elm.prompt_pending;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_answer_arrives_after_silence_when_send_command_then_drain_waits_for_it() {
+        let mut elm: Elm327<MockTransport> = elm(
+            vec![
+                Err(TransportError::Disconnected),
+                Err(TransportError::Timeout),
+                Ok(b"UNABLE TO CONNECT\r\r>".to_vec()),
+                Err(TransportError::Timeout),
+                Ok(b"41 0D 0A \r\r>".to_vec()),
+            ],
+            one_second(),
+        );
+        let _ = elm.send_command("0100");
+
+        let expected: Result<String, ObdError> = Ok("41 0D 0A \r\r>".to_string());
+        let actual: Result<String, ObdError> = elm.send_command("010D");
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_prompt_never_arrives_when_send_command_then_writes_command_after_deadline() {
+        let mut elm: Elm327<MockTransport> =
+            elm(vec![Err(TransportError::Disconnected)], Duration::ZERO);
+        let _ = elm.send_command("0100");
+        let _ = elm.send_command("010D");
+
+        let expected: &[u8] = b"0100\r010D\r";
+        let actual: &[u8] = elm.transport.written();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_search_timeout_expired_when_send_command_then_returns_response_timeout_with_partial() {
+        let mut elm: Elm327<MockTransport> = Elm327::new(
+            MockTransport::new(vec![Ok(b"SEARCHING...".to_vec())]),
+            Duration::ZERO,
+            Duration::ZERO,
+        );
+
+        let expected: Result<String, ObdError> =
+            Err(ObdError::ResponseTimeout("SEARCHING...".to_string()));
+        let actual: Result<String, ObdError> = elm.send_command("0100");
+
+        assert_eq!(actual, expected);
+    }
+
     fn atz_answer() -> Result<Vec<u8>, TransportError> {
         Ok(b"ATZ\r\r\rELM327 v1.5\r\r>".to_vec())
     }
@@ -650,5 +826,104 @@ mod tests {
         let actual: bool = elm.desynced;
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_no_next_range_when_read_supported_pids_then_writes_only_first_query() {
+        let mut elm: Elm327<MockTransport> =
+            elm(vec![Ok(b"41 00 98 3A 80 12 \r\r>".to_vec())], one_second());
+        let _ = elm.read_supported_pids();
+
+        let expected: &[u8] = b"0100\r";
+        let actual: &[u8] = elm.transport.written();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_next_range_announced_when_read_supported_pids_then_queries_it() {
+        let mut elm: Elm327<MockTransport> = elm(
+            vec![
+                Ok(b"41 00 98 3A 80 13 \r\r>".to_vec()),
+                Ok(b"41 20 00 02 00 00 \r\r>".to_vec()),
+            ],
+            one_second(),
+        );
+        let _ = elm.read_supported_pids();
+
+        let expected: &[u8] = b"0100\r0120\r";
+        let actual: &[u8] = elm.transport.written();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_two_ranges_when_read_supported_pids_then_mask_contains_pids_of_both() {
+        let mut elm: Elm327<MockTransport> = elm(
+            vec![
+                Ok(b"41 00 98 3A 80 13 \r\r>".to_vec()),
+                Ok(b"41 20 00 02 00 00 \r\r>".to_vec()),
+            ],
+            one_second(),
+        );
+
+        let supported: SupportedPidsMask = elm.read_supported_pids().unwrap();
+
+        assert!(supported.contains(Pid::EngineSpeed));
+        assert!(supported.contains(Pid::FuelTankLevel));
+    }
+
+    #[test]
+    fn given_no_data_on_later_range_when_read_supported_pids_then_keeps_first_range() {
+        let mut elm: Elm327<MockTransport> = elm(
+            vec![
+                Ok(b"41 00 98 3A 80 13 \r\r>".to_vec()),
+                Ok(b"NO DATA\r\r>".to_vec()),
+            ],
+            one_second(),
+        );
+
+        let supported: SupportedPidsMask = elm.read_supported_pids().unwrap();
+
+        assert!(supported.contains(Pid::EngineSpeed));
+        assert!(!supported.contains(Pid::FuelTankLevel));
+    }
+
+    #[test]
+    fn given_no_data_on_first_range_when_read_supported_pids_then_returns_no_data() {
+        let mut elm: Elm327<MockTransport> = elm(vec![Ok(b"NO DATA\r\r>".to_vec())], one_second());
+
+        let expected: Result<SupportedPidsMask, ObdError> = Err(ObdError::NoData);
+        let actual: Result<SupportedPidsMask, ObdError> = elm.read_supported_pids();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_last_range_announces_next_when_read_supported_pids_then_stops_after_e0() {
+        let answers: Vec<Result<Vec<u8>, TransportError>> = (0..8u8)
+            .map(|range_index| {
+                let base_code: u8 = range_index * 0x20;
+                Ok(format!("41 {base_code:02X} 00 00 00 01 \r\r>").into_bytes())
+            })
+            .collect();
+        let mut elm: Elm327<MockTransport> = elm(answers, one_second());
+        let _ = elm.read_supported_pids();
+
+        let expected: &[u8] = b"0100\r0120\r0140\r0160\r0180\r01A0\r01C0\r01E0\r";
+        let actual: &[u8] = elm.transport.written();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_wrong_range_response_when_read_supported_pids_then_returns_malformed_and_desyncs() {
+        let mut elm: Elm327<MockTransport> =
+            elm(vec![Ok(b"41 20 00 02 00 00 \r\r>".to_vec())], one_second());
+
+        let actual: Result<SupportedPidsMask, ObdError> = elm.read_supported_pids();
+
+        assert!(matches!(actual, Err(ObdError::Malformed(_))));
+        assert!(elm.desynced);
     }
 }

@@ -100,6 +100,7 @@ fn given_emulator_when_initialize_then_returns_ok() {
         TcpTransport::connect(EMULATOR_ADDRESS, READ_TIMEOUT)
             .expect("failed to connect to emulator at 127.0.0.1:35000"),
         READ_TIMEOUT,
+        READ_TIMEOUT,
     );
 
     let expected: bool = true;
@@ -114,6 +115,7 @@ fn given_initialized_elm_when_reading_vehicle_speed_then_returns_reading() {
     let mut elm = Elm327::new(
         TcpTransport::connect(EMULATOR_ADDRESS, READ_TIMEOUT)
             .expect("failed to connect to emulator at 127.0.0.1:35000"),
+        READ_TIMEOUT,
         READ_TIMEOUT,
     );
     elm.initialize().expect("failed to initialize emulator");
