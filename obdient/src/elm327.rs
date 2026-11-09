@@ -50,6 +50,14 @@ impl<T: Transport> Elm327<T> {
         Ok(())
     }
 
+    pub fn reconnect(&mut self) -> Result<(), ObdError> {
+        self.transport.reconnect()?;
+        self.desynced = false;
+        self.prompt_pending = false;
+
+        self.initialize()
+    }
+
     pub fn read_supported_pids(&mut self) -> Result<SupportedPidsMask, ObdError> {
         let mut supported: SupportedPidsMask = SupportedPidsMask::default();
         let mut base_code: u8 = 0x00;
@@ -676,6 +684,73 @@ mod tests {
 
         let expected: bool = false;
         let actual: bool = elm.desynced;
+
+        assert_eq!(actual, expected);
+    }
+
+    fn elm_with_failing_reconnect() -> Elm327<MockTransport> {
+        Elm327::new(
+            MockTransport::new(
+                correct_init_answers(),
+                vec![Err(TransportError::Disconnected)],
+            ),
+            one_second(),
+            one_second(),
+        )
+    }
+
+    #[test]
+    fn given_correct_init_answers_when_reconnect_then_returns_ok() {
+        let mut elm: Elm327<MockTransport> = elm(correct_init_answers(), one_second());
+
+        let expected: Result<(), ObdError> = Ok(());
+        let actual: Result<(), ObdError> = elm.reconnect();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_correct_init_answers_when_reconnect_then_writes_init_sequence() {
+        let mut elm: Elm327<MockTransport> = elm(correct_init_answers(), one_second());
+        let _ = elm.reconnect();
+
+        let expected: &[u8] = b"ATZ\rATE0\rATL0\rATS0\rATH0\r";
+        let actual: &[u8] = elm.transport.written();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_failed_command_when_reconnect_then_initializes_without_draining() {
+        let mut reads: Vec<Result<Vec<u8>, TransportError>> =
+            vec![Err(TransportError::Disconnected)];
+        reads.extend(correct_init_answers());
+        let mut elm: Elm327<MockTransport> = elm(reads, one_second());
+        let _ = elm.send_command("010C");
+
+        let expected: Result<(), ObdError> = Ok(());
+        let actual: Result<(), ObdError> = elm.reconnect();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_transport_reconnect_fails_when_reconnect_then_returns_transport_error() {
+        let mut elm: Elm327<MockTransport> = elm_with_failing_reconnect();
+
+        let expected: Result<(), ObdError> = Err(ObdError::Transport(TransportError::Disconnected));
+        let actual: Result<(), ObdError> = elm.reconnect();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_transport_reconnect_fails_when_reconnect_then_writes_nothing() {
+        let mut elm: Elm327<MockTransport> = elm_with_failing_reconnect();
+        let _ = elm.reconnect();
+
+        let expected: &[u8] = b"";
+        let actual: &[u8] = elm.transport.written();
 
         assert_eq!(actual, expected);
     }
