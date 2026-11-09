@@ -13,6 +13,11 @@ const READ_TIMEOUT: Duration = Duration::from_millis(100);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(15);
 const VEHICLE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+const RECONNECT_POLICY: RetryPolicy = RetryPolicy {
+    max_attempts: 5,
+    initial_backoff: Duration::from_secs(1),
+    max_backoff: Duration::from_secs(8),
+};
 const PIDS: [Pid; 5] = [
     Pid::EngineSpeed,
     Pid::VehicleSpeed,
@@ -72,7 +77,12 @@ fn run<T: Transport>(transport: T, interval_ms: u64) -> Result<(), ObdError> {
         eprintln!("PID {pid:?}: not supported by vehicle")
     }
 
-    let mut poller: Poller<T> = Poller::new(elm327_driver, supported_pids, RetryPolicy::default());
+    let mut poller: Poller<T> = Poller::new(
+        elm327_driver,
+        supported_pids,
+        RetryPolicy::default(),
+        RECONNECT_POLICY,
+    );
 
     while poller.has_active_pids() {
         match poller.poll_cycle() {
