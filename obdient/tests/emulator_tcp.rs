@@ -3,8 +3,14 @@
 //! Start the emulator, then run the ignored tests:
 //!     elm -n 35000
 //!     cargo test --test emulator_tcp -- --ignored
+//!
+//! The emulator serves one TCP client at a time, so each test holds a lock
+//! and the tests run one after another.
 
-use std::time::Duration;
+use std::{
+    sync::{Mutex, MutexGuard, PoisonError},
+    time::Duration,
+};
 
 use obdient::{
     elm327::Elm327,
@@ -15,6 +21,16 @@ use obdient::{
 
 const EMULATOR_ADDRESS: &str = "127.0.0.1:35000";
 const READ_TIMEOUT: Duration = Duration::from_secs(2);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+
+static EMULATOR: Mutex<()> = Mutex::new(());
+
+/// Held for the whole test. Declared before the transport, so the connection
+/// is dropped first and only then the next test can connect. A test that
+/// panics poisons the mutex; the next one takes the lock anyway.
+fn lock_emulator() -> MutexGuard<'static, ()> {
+    EMULATOR.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 // Test-only framing helper; the real one will live in the Elm327 layer.
 fn send_command(transport: &mut TcpTransport, command: &str) -> String {
@@ -34,13 +50,14 @@ fn send_command(transport: &mut TcpTransport, command: &str) -> String {
 }
 
 fn connect() -> TcpTransport {
-    TcpTransport::connect(EMULATOR_ADDRESS, READ_TIMEOUT)
+    TcpTransport::connect(EMULATOR_ADDRESS, READ_TIMEOUT, CONNECT_TIMEOUT)
         .expect("failed to connect to emulator at 127.0.0.1:35000")
 }
 
 #[test]
 #[ignore]
 fn given_emulator_when_sending_atz_then_response_contains_elm327() {
+    let _emulator = lock_emulator();
     let mut transport = connect();
 
     let response = send_command(&mut transport, "ATZ");
@@ -54,6 +71,7 @@ fn given_emulator_when_sending_atz_then_response_contains_elm327() {
 #[test]
 #[ignore]
 fn given_echo_off_when_requesting_engine_rpm_then_response_contains_41_0c() {
+    let _emulator = lock_emulator();
     let mut transport = connect();
 
     send_command(&mut transport, "ATE0");
@@ -68,6 +86,7 @@ fn given_echo_off_when_requesting_engine_rpm_then_response_contains_41_0c() {
 #[test]
 #[ignore]
 fn given_reconnected_transport_when_sending_atz_then_response_contains_elm327() {
+    let _emulator = lock_emulator();
     let mut transport = connect();
 
     transport
@@ -84,6 +103,7 @@ fn given_reconnected_transport_when_sending_atz_then_response_contains_elm327() 
 #[test]
 #[ignore]
 fn given_no_pending_data_when_reading_then_returns_timeout() {
+    let _emulator = lock_emulator();
     let mut transport = connect();
     send_command(&mut transport, "ATZ");
 
@@ -96,8 +116,9 @@ fn given_no_pending_data_when_reading_then_returns_timeout() {
 #[test]
 #[ignore]
 fn given_emulator_when_initialize_then_returns_ok() {
+    let _emulator = lock_emulator();
     let mut elm = Elm327::new(
-        TcpTransport::connect(EMULATOR_ADDRESS, READ_TIMEOUT)
+        TcpTransport::connect(EMULATOR_ADDRESS, READ_TIMEOUT, CONNECT_TIMEOUT)
             .expect("failed to connect to emulator at 127.0.0.1:35000"),
         READ_TIMEOUT,
         READ_TIMEOUT,
@@ -112,8 +133,9 @@ fn given_emulator_when_initialize_then_returns_ok() {
 #[test]
 #[ignore]
 fn given_initialized_elm_when_reading_vehicle_speed_then_returns_reading() {
+    let _emulator = lock_emulator();
     let mut elm = Elm327::new(
-        TcpTransport::connect(EMULATOR_ADDRESS, READ_TIMEOUT)
+        TcpTransport::connect(EMULATOR_ADDRESS, READ_TIMEOUT, CONNECT_TIMEOUT)
             .expect("failed to connect to emulator at 127.0.0.1:35000"),
         READ_TIMEOUT,
         READ_TIMEOUT,

@@ -10,6 +10,7 @@ use obdient::{
 };
 
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(15);
 const VEHICLE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
@@ -52,7 +53,7 @@ fn main() -> Result<(), ObdError> {
 
     match (args.tcp, args.serial) {
         (Some(address), None) => run(
-            TcpTransport::connect(&address, READ_TIMEOUT)?,
+            TcpTransport::connect(&address, READ_TIMEOUT, CONNECT_TIMEOUT)?,
             args.interval_ms,
         ),
         (None, Some(path)) => run(

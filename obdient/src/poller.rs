@@ -532,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn given_connect_timeout_then_success_when_reconnect_then_returns_ok() {
+    fn given_transient_error_then_success_when_reconnect_then_returns_ok() {
         let mut poller: Poller<MockTransport> = poller_with_reconnects(
             init_answers(),
             vec![Err(TransportError::Timeout), Ok(())],

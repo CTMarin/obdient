@@ -16,6 +16,7 @@ use obdient::{
 
 const SHORT_TIMEOUT: Duration = Duration::from_millis(100);
 const READ_TIMEOUT: Duration = Duration::from_secs(1);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 
 fn listener() -> (TcpListener, String) {
     let listener: TcpListener =
@@ -38,7 +39,8 @@ fn io_kind<T>(result: Result<T, TransportError>) -> Option<std::io::ErrorKind> {
 #[test]
 fn given_server_sends_bytes_when_reading_then_returns_those_bytes() {
     let (listener, address) = listener();
-    let mut transport = TcpTransport::connect(&address, READ_TIMEOUT).expect("failed to connect");
+    let mut transport =
+        TcpTransport::connect(&address, READ_TIMEOUT, CONNECT_TIMEOUT).expect("failed to connect");
     let (mut server_socket, _) = listener.accept().expect("failed to accept");
     server_socket
         .write_all(b"41 0C 14 5F \r\r>")
@@ -56,7 +58,8 @@ fn given_server_sends_bytes_when_reading_then_returns_those_bytes() {
 #[test]
 fn given_transport_when_writing_then_server_receives_exact_bytes() {
     let (listener, address) = listener();
-    let mut transport = TcpTransport::connect(&address, READ_TIMEOUT).expect("failed to connect");
+    let mut transport =
+        TcpTransport::connect(&address, READ_TIMEOUT, CONNECT_TIMEOUT).expect("failed to connect");
     let (mut server_socket, _) = listener.accept().expect("failed to accept");
     server_socket
         .set_read_timeout(Some(READ_TIMEOUT))
@@ -77,7 +80,8 @@ fn given_transport_when_writing_then_server_receives_exact_bytes() {
 #[test]
 fn given_silent_server_when_reading_then_returns_timeout() {
     let (listener, address) = listener();
-    let mut transport = TcpTransport::connect(&address, SHORT_TIMEOUT).expect("failed to connect");
+    let mut transport =
+        TcpTransport::connect(&address, SHORT_TIMEOUT, CONNECT_TIMEOUT).expect("failed to connect");
     let (_server_socket, _) = listener.accept().expect("failed to accept");
 
     let mut buffer = [0u8; 64];
@@ -90,7 +94,8 @@ fn given_silent_server_when_reading_then_returns_timeout() {
 #[test]
 fn given_server_closed_connection_when_reading_then_returns_disconnected() {
     let (listener, address) = listener();
-    let mut transport = TcpTransport::connect(&address, READ_TIMEOUT).expect("failed to connect");
+    let mut transport =
+        TcpTransport::connect(&address, READ_TIMEOUT, CONNECT_TIMEOUT).expect("failed to connect");
     let (server_socket, _) = listener.accept().expect("failed to accept");
     drop(server_socket);
 
@@ -104,7 +109,8 @@ fn given_server_closed_connection_when_reading_then_returns_disconnected() {
 #[test]
 fn given_reconnected_transport_when_reading_then_receives_data_from_new_connection() {
     let (listener, address) = listener();
-    let mut transport = TcpTransport::connect(&address, READ_TIMEOUT).expect("failed to connect");
+    let mut transport =
+        TcpTransport::connect(&address, READ_TIMEOUT, CONNECT_TIMEOUT).expect("failed to connect");
     let (_first_socket, _) = listener.accept().expect("failed to accept first");
 
     let reconnect_result: Result<(), TransportError> = transport.reconnect();
@@ -127,7 +133,8 @@ fn given_reconnected_transport_when_reading_then_receives_data_from_new_connecti
 #[test]
 fn given_reconnected_transport_when_server_is_silent_then_read_times_out() {
     let (listener, address) = listener();
-    let mut transport = TcpTransport::connect(&address, SHORT_TIMEOUT).expect("failed to connect");
+    let mut transport =
+        TcpTransport::connect(&address, SHORT_TIMEOUT, CONNECT_TIMEOUT).expect("failed to connect");
     let (_first_socket, _) = listener.accept().expect("failed to accept first");
     transport.reconnect().expect("failed to reconnect");
     let (_second_socket, _) = listener.accept().expect("failed to accept second");
@@ -145,7 +152,11 @@ fn given_no_listener_when_connecting_then_returns_connection_refused() {
     drop(listener);
 
     let expected: Option<std::io::ErrorKind> = Some(std::io::ErrorKind::ConnectionRefused);
-    let actual: Option<std::io::ErrorKind> = io_kind(TcpTransport::connect(&address, READ_TIMEOUT));
+    let actual: Option<std::io::ErrorKind> = io_kind(TcpTransport::connect(
+        &address,
+        READ_TIMEOUT,
+        CONNECT_TIMEOUT,
+    ));
 
     assert_eq!(actual, expected);
 }
@@ -155,8 +166,11 @@ fn given_zero_read_timeout_when_connect_then_returns_invalid_input() {
     let (_listener, address) = listener();
 
     let expected: Option<std::io::ErrorKind> = Some(std::io::ErrorKind::InvalidInput);
-    let actual: Option<std::io::ErrorKind> =
-        io_kind(TcpTransport::connect(&address, Duration::ZERO));
+    let actual: Option<std::io::ErrorKind> = io_kind(TcpTransport::connect(
+        &address,
+        Duration::ZERO,
+        CONNECT_TIMEOUT,
+    ));
 
     assert_eq!(actual, expected);
 }
@@ -164,13 +178,54 @@ fn given_zero_read_timeout_when_connect_then_returns_invalid_input() {
 #[test]
 fn given_listener_gone_when_reconnect_then_returns_connection_refused() {
     let (listener, address) = listener();
-    let mut transport = TcpTransport::connect(&address, READ_TIMEOUT).expect("failed to connect");
+    let mut transport =
+        TcpTransport::connect(&address, READ_TIMEOUT, CONNECT_TIMEOUT).expect("failed to connect");
     let (server_socket, _) = listener.accept().expect("failed to accept");
     drop(server_socket);
     drop(listener);
 
     let expected: Option<std::io::ErrorKind> = Some(std::io::ErrorKind::ConnectionRefused);
     let actual: Option<std::io::ErrorKind> = io_kind(transport.reconnect());
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn given_address_without_port_when_connect_then_returns_invalid_input() {
+    let expected: Option<std::io::ErrorKind> = Some(std::io::ErrorKind::InvalidInput);
+    let actual: Option<std::io::ErrorKind> = io_kind(TcpTransport::connect(
+        "127.0.0.1",
+        READ_TIMEOUT,
+        CONNECT_TIMEOUT,
+    ));
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn given_zero_connect_timeout_when_connect_then_returns_invalid_input() {
+    let (_listener, address) = listener();
+
+    let expected: Option<std::io::ErrorKind> = Some(std::io::ErrorKind::InvalidInput);
+    let actual: Option<std::io::ErrorKind> = io_kind(TcpTransport::connect(
+        &address,
+        READ_TIMEOUT,
+        Duration::ZERO,
+    ));
+
+    assert_eq!(actual, expected);
+}
+
+/// `localhost` can resolve to `::1` before `127.0.0.1`. Against an IPv4-only
+/// listener this checks that a failed address falls through to the next one.
+#[test]
+fn given_ipv4_listener_when_connect_to_localhost_then_connects() {
+    let (_listener, address) = listener();
+    let port: &str = address.rsplit(':').next().expect("address has a port");
+
+    let expected: bool = true;
+    let actual: bool =
+        TcpTransport::connect(&format!("localhost:{port}"), READ_TIMEOUT, CONNECT_TIMEOUT).is_ok();
 
     assert_eq!(actual, expected);
 }
