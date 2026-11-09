@@ -191,6 +191,58 @@ fn given_listener_gone_when_reconnect_then_returns_connection_refused() {
 }
 
 #[test]
+fn given_failed_reconnect_when_server_reads_then_old_connection_is_closed() {
+    let (listener, address) = listener();
+    let mut transport =
+        TcpTransport::connect(&address, READ_TIMEOUT, CONNECT_TIMEOUT).expect("failed to connect");
+    let (mut server_socket, _) = listener.accept().expect("failed to accept");
+    drop(listener);
+    let _ = transport.reconnect();
+    server_socket
+        .set_read_timeout(Some(SHORT_TIMEOUT))
+        .expect("failed to set server read timeout");
+
+    let mut buffer = [0u8; 64];
+    let expected: Result<usize, std::io::ErrorKind> = Ok(0);
+    let actual: Result<usize, std::io::ErrorKind> = server_socket
+        .read(&mut buffer)
+        .map_err(|error| error.kind());
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn given_failed_reconnect_when_reading_then_returns_disconnected() {
+    let (listener, address) = listener();
+    let mut transport =
+        TcpTransport::connect(&address, SHORT_TIMEOUT, CONNECT_TIMEOUT).expect("failed to connect");
+    let (_server_socket, _) = listener.accept().expect("failed to accept");
+    drop(listener);
+    let _ = transport.reconnect();
+
+    let mut buffer = [0u8; 64];
+    let expected: Result<usize, TransportError> = Err(TransportError::Disconnected);
+    let actual: Result<usize, TransportError> = transport.read(&mut buffer);
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn given_failed_reconnect_when_writing_then_returns_disconnected() {
+    let (listener, address) = listener();
+    let mut transport =
+        TcpTransport::connect(&address, READ_TIMEOUT, CONNECT_TIMEOUT).expect("failed to connect");
+    let (_server_socket, _) = listener.accept().expect("failed to accept");
+    drop(listener);
+    let _ = transport.reconnect();
+
+    let expected: Result<(), TransportError> = Err(TransportError::Disconnected);
+    let actual: Result<(), TransportError> = transport.write_all(b"ATZ\r");
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn given_address_without_port_when_connect_then_returns_invalid_input() {
     let expected: Option<std::io::ErrorKind> = Some(std::io::ErrorKind::InvalidInput);
     let actual: Option<std::io::ErrorKind> = io_kind(TcpTransport::connect(

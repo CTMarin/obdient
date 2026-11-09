@@ -8,7 +8,7 @@ use crate::{error::TransportError, transport::Transport};
 
 #[derive(Debug)]
 pub struct TcpTransport {
-    tcp_stream: TcpStream,
+    tcp_stream: Option<TcpStream>,
     address: String,
     read_timeout: Duration,
     connect_timeout: Duration,
@@ -23,7 +23,7 @@ impl TcpTransport {
         let tcp_stream: TcpStream = create_tcp_stream(addr, read_timeout, connect_timeout)?;
 
         Ok(Self {
-            tcp_stream,
+            tcp_stream: Some(tcp_stream),
             address: addr.to_string(),
             read_timeout,
             connect_timeout,
@@ -33,19 +33,32 @@ impl TcpTransport {
 
 impl Transport for TcpTransport {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, TransportError> {
-        match self.tcp_stream.read(buf)? {
+        match self
+            .tcp_stream
+            .as_mut()
+            .ok_or(TransportError::Disconnected)?
+            .read(buf)?
+        {
             0 => Err(TransportError::Disconnected),
             n => Ok(n),
         }
     }
 
     fn write_all(&mut self, data: &[u8]) -> Result<(), TransportError> {
-        Ok(self.tcp_stream.write_all(data)?)
+        Ok(self
+            .tcp_stream
+            .as_mut()
+            .ok_or(TransportError::Disconnected)?
+            .write_all(data)?)
     }
 
     fn reconnect(&mut self) -> Result<(), TransportError> {
-        self.tcp_stream =
-            create_tcp_stream(&self.address, self.read_timeout, self.connect_timeout)?;
+        self.tcp_stream = None;
+        self.tcp_stream = Some(create_tcp_stream(
+            &self.address,
+            self.read_timeout,
+            self.connect_timeout,
+        )?);
         Ok(())
     }
 }
