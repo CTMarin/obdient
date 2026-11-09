@@ -77,19 +77,20 @@ transport   moves bytes (TCP or serial)
 ```
 
 - **Transport** is a trait with `read`, `write_all` and `reconnect`. It doesn't know anything about OBD, so adding serial didn't touch the protocol code.
-- **Serial reconnect** closes the old port before opening the new one. Ports are opened in exclusive mode, so opening again while the old one is still open fails with EBUSY. A test against a real pty caught this.
+- **Reconnect closes first.** Both transports close the old connection before opening the new one, even if the new one then fails. Serial ports are opened in exclusive mode, so opening again while the old one is still open fails with EBUSY. A test against a real pty caught this. Over TCP, an adapter that serves one client at a time might keep serving the old connection and never take the new one. After a failed reconnect, reads and writes return `Disconnected`.
+- **Connect timeout.** A TCP connect gives up after 5 s. Without it, a host that doesn't answer blocks for the OS timeout, which is about 75 s on macOS and a couple of minutes on Linux. An address can resolve to more than one (`localhost` is `::1` and `127.0.0.1`), so each one is tried in turn. A connect timeout is reported as an I/O error, not as the read `Timeout`, because it means the connection couldn't be made. Name resolution isn't covered by the timeout, but adapters are usually reached by IP address.
 - **Framing.** TCP and serial are byte streams, so an answer can arrive in pieces. `Elm327` keeps reading until the `>` prompt, with an overall deadline and a size limit so a stuck or noisy adapter can't block it forever.
 - **Search timeout.** After a command, the adapter can spend several seconds looking for the vehicle's protocol. It prints `SEARCHING...` first, and a new byte would abort the search. While that marker is in the answer, the deadline grows from 2 s to 15 s. The 15 s is an estimate I haven't checked on a real adapter.
 - **Resync.** If a command fails, a late answer might still be on its way. Before sending the next command, the driver reads until the pending `>` arrives, so that late answer isn't read as the response to the new one. If the line stays silent until the deadline, it assumes the prompt was lost and carries on. After a corrupt answer the prompt has already arrived, so it only clears what is left on the line.
 - **Parsing** handles responses with and without spaces, several ECUs answering, `SEARCHING...`, and the adapter's error messages (`NO DATA`, `?`, `UNABLE TO CONNECT`, bus errors).
 - **Errors** are typed (`ObdError`, `TransportError`). I/O errors keep the OS message. Each error also has a kind (transient, PID unavailable, vehicle unavailable, connection lost), and the poller decides what to do from that kind.
 - **Retries.** Transient errors are retried up to 3 attempts in total, with exponential backoff between them (100 ms, then 200 ms, capped at 1 s). If they run out, the failure is reported and the cycle moves on to the next PID. In the worst case a cycle takes about 30 s plus backoff: 5 PIDs × 3 attempts × 2 s response timeout. A protocol search can make it longer.
-- **Supported PIDs.** At startup the driver asks `0100`, then each later range the previous one announces, up to `01E0`. `NO DATA` on a later range keeps the ranges already read. On the first range it counts as the vehicle not answering.
+- **Supported PIDs.** At startup the driver asks `0100`, then each later range the previous one announces, up to `01E0`. `NO DATA` on a later range keeps the ranges already read. The emulator does exactly this: its `0140` answer announces the `0160` range, and then it answers `NO DATA` for it. On the first range it counts as the vehicle not answering.
 - **`?` and `NO DATA`.** After startup, a PID is only dropped from polling when the adapter answers `?`. `NO DATA` doesn't drop it, because a slow or busy ECU can answer that too.
 - **Vehicle not responding.** `NO DATA` alone can't tell an unsupported PID from a car with the ignition off. At startup the driver keeps asking for the supported PIDs until the vehicle answers. While polling, a cycle with no readings and at least one `NO DATA` counts as the vehicle not responding: nothing is dropped and the next cycle tries again.
-- **Reconnect.** If the connection is lost while polling, the poller reconnects the transport and runs the AT setup again. First it clears the resync state of the old connection, so the first command doesn't wait for a `>` that can't arrive on the new one. It keeps the PIDs it was polling and doesn't ask `0100` again, since it's the same adapter and the same vehicle. Each attempt covers both steps, and any error counts as a failed attempt. After 5 attempts it gives up. The limit is needed even when the error looks recoverable: when a USB adapter is unplugged its device path disappears (ENOENT), which maps to `Disconnected`, so without a limit it would retry forever. The cycle that was cut is lost, not resumed. Until there is a connect timeout, one TCP attempt to a host that doesn't answer can block for the OS timeout, so the limit counts attempts but doesn't bound the time.
+- **Reconnect.** If the connection is lost while polling, the poller reconnects the transport and runs the AT setup again. First it clears the resync state of the old connection, so the first command doesn't wait for a `>` that can't arrive on the new one. It keeps the PIDs it was polling and doesn't ask `0100` again, since it's the same adapter and the same vehicle. Each attempt covers both steps, and any error counts as a failed attempt. After 5 attempts it gives up. The limit is needed even when the error looks recoverable: when a USB adapter is unplugged its device path disappears (ENOENT), which maps to `Disconnected`, so without a limit it would retry forever. The cycle that was cut is lost, not resumed.
 
-Retries and `?` are tested with the mock transport only. Runs against the emulator cover normal polling, the vehicle not responding (`engineoff`), waiting at startup until it answers, recovery when it answers again, `NO DATA` for some PIDs in one cycle, and the connection dropping: stopping the emulator and starting it again resumes the readings, and leaving it stopped exits after 5 failed attempts. The reconnect itself (number of attempts, the last error, running the AT setup again) is also covered with the mock transport. The resync bug with late answers depended on read timing and I never reproduced it on demand, so a unit test with the mock transport covers that fix.
+Retries and `?` are tested with the mock transport only. Runs against the emulator cover normal polling, the vehicle not responding (`engineoff`), waiting at startup until it answers, recovery when it answers again, `NO DATA` for some PIDs in one cycle, and the connection dropping: stopping the emulator and starting it again resumes the readings, and leaving it stopped exits after 5 failed attempts. The reconnect itself (number of attempts, the last error, running the AT setup again) is also covered with the mock transport. I checked the connect timeout by hand against 192.0.2.1, an address reserved for documentation that nobody answers: the program gives up after 5 s. The resync bug with late answers depended on read timing and I never reproduced it on demand, so a unit test with the mock transport covers that fix.
 
 ## Tests
 
@@ -107,7 +108,7 @@ cd obdient
 scripts/run-linux-tests.sh
 ```
 
-There are also tests against the emulator. They are ignored by default because they need it running:
+There are also tests against the emulator. They are ignored by default because they need it running. The emulator serves one client at a time, so these tests take a lock and run one after another:
 
 ```sh
 elm -n 35000
@@ -137,7 +138,7 @@ obdient/
 - [x] Retry policy: bounded retries with backoff, driven by the error kind
 - [x] Read the supported PIDs from the ECU (`0100`) at startup
 - [x] Reconnect when the adapter goes away
-- [ ] Connection timeout for Wi-Fi adapters
+- [x] Connection timeout for Wi-Fi adapters
 - [ ] Try it with a real ELM327 adapter
 - [ ] Run it on my ESP32-S3 talking to the adapter over UART
 
