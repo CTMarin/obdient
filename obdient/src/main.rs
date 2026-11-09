@@ -90,6 +90,11 @@ fn run<T: Transport>(transport: T, interval_ms: u64) -> Result<(), ObdError> {
             Err(error) if error.kind() == ObdErrorKind::VehicleUnavailable => {
                 eprintln!("{error}")
             }
+            Err(error) if error.kind() == ObdErrorKind::ConnectionLost => {
+                eprintln!("connection lost: {error}, reconnecting");
+                poller.reconnect()?;
+                eprintln!("reconnected")
+            }
             Err(error) => return Err(error),
         }
         sleep(Duration::from_millis(interval_ms));
