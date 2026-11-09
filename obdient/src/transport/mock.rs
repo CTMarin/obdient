@@ -6,14 +6,19 @@ pub struct MockTransport {
     reads: VecDeque<Result<Vec<u8>, TransportError>>,
     written: Vec<u8>,
     reconnects: usize,
+    reconnect_results: VecDeque<Result<(), TransportError>>,
 }
 
 impl MockTransport {
-    pub fn new(reads: Vec<Result<Vec<u8>, TransportError>>) -> Self {
+    pub fn new(
+        reads: Vec<Result<Vec<u8>, TransportError>>,
+        reconnect_results: Vec<Result<(), TransportError>>,
+    ) -> Self {
         Self {
             reads: VecDeque::from(reads),
             written: vec![],
             reconnects: 0,
+            reconnect_results: VecDeque::from(reconnect_results),
         }
     }
 
@@ -56,7 +61,10 @@ impl Transport for MockTransport {
 
     fn reconnect(&mut self) -> Result<(), TransportError> {
         self.reconnects += 1;
-        Ok(())
+        match self.reconnect_results.pop_front() {
+            None => Ok(()),
+            Some(result) => result,
+        }
     }
 }
 
@@ -66,7 +74,7 @@ mod tests {
 
     #[test]
     fn given_chunk_smaller_than_buffer_when_read_then_returns_chunk_length() {
-        let mut transport: MockTransport = MockTransport::new(vec![Ok(b"41 0C".to_vec())]);
+        let mut transport: MockTransport = MockTransport::new(vec![Ok(b"41 0C".to_vec())], vec![]);
         let mut buffer: [u8; 16] = [0u8; 16];
 
         let expected: Result<usize, TransportError> = Ok(5);
@@ -77,7 +85,7 @@ mod tests {
 
     #[test]
     fn given_chunk_smaller_than_buffer_when_read_then_fills_buffer_with_chunk() {
-        let mut transport: MockTransport = MockTransport::new(vec![Ok(b"41 0C".to_vec())]);
+        let mut transport: MockTransport = MockTransport::new(vec![Ok(b"41 0C".to_vec())], vec![]);
         let mut buffer: [u8; 16] = [0u8; 16];
         transport.read(&mut buffer).unwrap();
 
@@ -89,7 +97,7 @@ mod tests {
 
     #[test]
     fn given_chunk_larger_than_buffer_when_read_then_returns_buffer_length() {
-        let mut transport: MockTransport = MockTransport::new(vec![Ok(b"ABCDEF".to_vec())]);
+        let mut transport: MockTransport = MockTransport::new(vec![Ok(b"ABCDEF".to_vec())], vec![]);
         let mut buffer: [u8; 4] = [0u8; 4];
 
         let expected: Result<usize, TransportError> = Ok(4);
@@ -100,7 +108,7 @@ mod tests {
 
     #[test]
     fn given_chunk_larger_than_buffer_when_read_then_fills_buffer_with_prefix() {
-        let mut transport: MockTransport = MockTransport::new(vec![Ok(b"ABCDEF".to_vec())]);
+        let mut transport: MockTransport = MockTransport::new(vec![Ok(b"ABCDEF".to_vec())], vec![]);
         let mut buffer: [u8; 4] = [0u8; 4];
         transport.read(&mut buffer).unwrap();
 
@@ -112,7 +120,7 @@ mod tests {
 
     #[test]
     fn given_chunk_larger_than_buffer_when_read_twice_then_second_read_returns_remainder_length() {
-        let mut transport: MockTransport = MockTransport::new(vec![Ok(b"ABCDEF".to_vec())]);
+        let mut transport: MockTransport = MockTransport::new(vec![Ok(b"ABCDEF".to_vec())], vec![]);
         let mut buffer: [u8; 4] = [0u8; 4];
         transport.read(&mut buffer).unwrap();
 
@@ -124,7 +132,7 @@ mod tests {
 
     #[test]
     fn given_chunk_larger_than_buffer_when_read_twice_then_second_read_fills_remainder() {
-        let mut transport: MockTransport = MockTransport::new(vec![Ok(b"ABCDEF".to_vec())]);
+        let mut transport: MockTransport = MockTransport::new(vec![Ok(b"ABCDEF".to_vec())], vec![]);
         let mut buffer: [u8; 4] = [0u8; 4];
         transport.read(&mut buffer).unwrap();
         transport.read(&mut buffer).unwrap();
@@ -138,7 +146,7 @@ mod tests {
     #[test]
     fn given_scripted_error_when_read_then_returns_error_as_is() {
         let mut transport: MockTransport =
-            MockTransport::new(vec![Err(TransportError::Disconnected)]);
+            MockTransport::new(vec![Err(TransportError::Disconnected)], vec![]);
         let mut buffer: [u8; 16] = [0u8; 16];
 
         let expected: Result<usize, TransportError> = Err(TransportError::Disconnected);
@@ -149,7 +157,7 @@ mod tests {
 
     #[test]
     fn given_empty_queue_when_read_then_returns_timeout() {
-        let mut transport: MockTransport = MockTransport::new(vec![]);
+        let mut transport: MockTransport = MockTransport::new(vec![], vec![]);
         let mut buffer: [u8; 16] = [0u8; 16];
 
         let expected: Result<usize, TransportError> = Err(TransportError::Timeout);
@@ -161,7 +169,7 @@ mod tests {
     #[test]
     fn given_two_chunks_when_read_then_first_read_returns_first_chunk() {
         let mut transport: MockTransport =
-            MockTransport::new(vec![Ok(b"A".to_vec()), Ok(b"B".to_vec())]);
+            MockTransport::new(vec![Ok(b"A".to_vec()), Ok(b"B".to_vec())], vec![]);
         let mut buffer: [u8; 16] = [0u8; 16];
         transport.read(&mut buffer).unwrap();
 
@@ -174,7 +182,7 @@ mod tests {
     #[test]
     fn given_two_chunks_when_read_twice_then_second_read_returns_second_chunk() {
         let mut transport: MockTransport =
-            MockTransport::new(vec![Ok(b"A".to_vec()), Ok(b"B".to_vec())]);
+            MockTransport::new(vec![Ok(b"A".to_vec()), Ok(b"B".to_vec())], vec![]);
         let mut buffer: [u8; 16] = [0u8; 16];
         transport.read(&mut buffer).unwrap();
         transport.read(&mut buffer).unwrap();
@@ -187,7 +195,7 @@ mod tests {
 
     #[test]
     fn given_two_writes_when_written_then_returns_accumulated_bytes() {
-        let mut transport: MockTransport = MockTransport::new(vec![]);
+        let mut transport: MockTransport = MockTransport::new(vec![], vec![]);
         transport.write_all(b"ATZ\r").unwrap();
         transport.write_all(b"ATE0\r").unwrap();
 
@@ -199,7 +207,7 @@ mod tests {
 
     #[test]
     fn given_two_reconnects_when_reconnects_then_returns_two() {
-        let mut transport: MockTransport = MockTransport::new(vec![]);
+        let mut transport: MockTransport = MockTransport::new(vec![], vec![]);
         transport.reconnect().unwrap();
         transport.reconnect().unwrap();
 
@@ -210,9 +218,54 @@ mod tests {
     }
 
     #[test]
+    fn given_scripted_reconnect_error_when_reconnect_then_returns_error_as_is() {
+        let mut transport: MockTransport =
+            MockTransport::new(vec![], vec![Err(TransportError::Disconnected)]);
+
+        let expected: Result<(), TransportError> = Err(TransportError::Disconnected);
+        let actual: Result<(), TransportError> = transport.reconnect();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_empty_reconnect_queue_when_reconnect_then_returns_ok() {
+        let mut transport: MockTransport = MockTransport::new(vec![], vec![]);
+
+        let expected: Result<(), TransportError> = Ok(());
+        let actual: Result<(), TransportError> = transport.reconnect();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_failed_reconnect_when_reconnects_then_counts_it() {
+        let mut transport: MockTransport =
+            MockTransport::new(vec![], vec![Err(TransportError::Disconnected)]);
+        let _ = transport.reconnect();
+
+        let expected: usize = 1;
+        let actual: usize = transport.reconnects();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_ok_then_error_scripted_when_reconnect_twice_then_second_returns_error() {
+        let mut transport: MockTransport =
+            MockTransport::new(vec![], vec![Ok(()), Err(TransportError::Disconnected)]);
+        transport.reconnect().unwrap();
+
+        let expected: Result<(), TransportError> = Err(TransportError::Disconnected);
+        let actual: Result<(), TransportError> = transport.reconnect();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     #[should_panic(expected = "empty chunk")]
     fn given_empty_scripted_chunk_when_read_then_panics() {
-        let mut transport: MockTransport = MockTransport::new(vec![Ok(vec![])]);
+        let mut transport: MockTransport = MockTransport::new(vec![Ok(vec![])], vec![]);
         let mut buffer: [u8; 16] = [0u8; 16];
 
         let _ = transport.read(&mut buffer);

@@ -191,7 +191,11 @@ mod tests {
         reads: Vec<Result<Vec<u8>, TransportError>>,
         response_timeout: Duration,
     ) -> Elm327<MockTransport> {
-        Elm327::new(MockTransport::new(reads), response_timeout, one_second())
+        Elm327::new(
+            MockTransport::new(reads, vec![]),
+            response_timeout,
+            one_second(),
+        )
     }
 
     fn one_second() -> Duration {
@@ -564,7 +568,7 @@ mod tests {
     #[test]
     fn given_search_timeout_expired_when_send_command_then_returns_response_timeout_with_partial() {
         let mut elm: Elm327<MockTransport> = Elm327::new(
-            MockTransport::new(vec![Ok(b"SEARCHING...".to_vec())]),
+            MockTransport::new(vec![Ok(b"SEARCHING...".to_vec())], vec![]),
             Duration::ZERO,
             Duration::ZERO,
         );

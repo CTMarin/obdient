@@ -125,7 +125,7 @@ mod tests {
         pids: Vec<Pid>,
     ) -> Poller<MockTransport> {
         let elm327: Elm327<MockTransport> = Elm327::new(
-            MockTransport::new(reads),
+            MockTransport::new(reads, vec![]),
             Duration::from_secs(1),
             Duration::from_secs(1),
         );
@@ -397,7 +397,7 @@ mod tests {
 
     fn elm327(reads: Vec<Result<Vec<u8>, TransportError>>) -> Elm327<MockTransport> {
         Elm327::new(
-            MockTransport::new(reads),
+            MockTransport::new(reads, vec![]),
             Duration::from_secs(1),
             Duration::from_secs(1),
         )
