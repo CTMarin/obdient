@@ -3,6 +3,7 @@ use std::time::Duration;
 const DEFAULT_INITIAL_BACKOFF_MS: u64 = 100;
 const DEFAULT_MAX_BACKOFF_MS: u64 = 1000;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetryPolicy {
     pub max_attempts: u32,
     pub initial_backoff: Duration,

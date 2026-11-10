@@ -77,14 +77,17 @@ impl<T: Transport> Poller<T> {
         Ok(report)
     }
 
-    pub fn reconnect(&mut self) -> Result<(), ObdError> {
+    pub fn reconnect(
+        &mut self,
+        mut on_failed_attempt: impl FnMut(u32, u32, &ObdError),
+    ) -> Result<(), ObdError> {
         let mut attempt: u32 = 1;
         let max_attempts: u32 = self.reconnect_policy.max_attempts;
 
         loop {
             match self.elm327.reconnect() {
                 Err(error) if attempt < self.reconnect_policy.max_attempts => {
-                    eprintln!("reconnect attempt {attempt}/{max_attempts} failed: {error}");
+                    on_failed_attempt(attempt, max_attempts, &error);
                     sleep(self.reconnect_policy.backoff_for(attempt - 1));
                     attempt += 1;
                 }
@@ -114,12 +117,13 @@ impl<T: Transport> Poller<T> {
 pub fn wait_for_supported_pids<T: Transport>(
     elm327: &mut Elm327<T>,
     retry_interval: Duration,
+    mut on_waiting: impl FnMut(&ObdError),
 ) -> Result<SupportedPidsMask, ObdError> {
     loop {
         match elm327.read_supported_pids() {
             Ok(supported) => return Ok(supported),
             Err(error) if should_wait_for_vehicle(&error) => {
-                eprintln!("waiting for vehicle: {error}");
+                on_waiting(&error);
                 sleep(retry_interval);
             }
             Err(error) => return Err(error),
@@ -474,7 +478,7 @@ mod tests {
             poller_with_reconnects(init_answers(), vec![], vec![Pid::EngineSpeed]);
 
         let expected: Result<(), ObdError> = Ok(());
-        let actual: Result<(), ObdError> = poller.reconnect();
+        let actual: Result<(), ObdError> = poller.reconnect(|_, _, _| {});
 
         assert_eq!(actual, expected);
     }
@@ -488,7 +492,7 @@ mod tests {
         );
 
         let expected: Result<(), ObdError> = Ok(());
-        let actual: Result<(), ObdError> = poller.reconnect();
+        let actual: Result<(), ObdError> = poller.reconnect(|_, _, _| {});
 
         assert_eq!(actual, expected);
     }
@@ -500,7 +504,7 @@ mod tests {
             two_failures_then_success(),
             vec![Pid::EngineSpeed],
         );
-        let _ = poller.reconnect();
+        let _ = poller.reconnect(|_, _, _| {});
 
         let expected: usize = 3;
         let actual: usize = poller.elm327.transport().reconnects();
@@ -514,7 +518,7 @@ mod tests {
             poller_with_reconnects(vec![], persistent_failures(), vec![Pid::EngineSpeed]);
 
         let expected: Result<(), ObdError> = Err(ObdError::Transport(connection_refused()));
-        let actual: Result<(), ObdError> = poller.reconnect();
+        let actual: Result<(), ObdError> = poller.reconnect(|_, _, _| {});
 
         assert_eq!(actual, expected);
     }
@@ -523,7 +527,7 @@ mod tests {
     fn given_persistent_failure_when_reconnect_then_attempts_max_attempts_times() {
         let mut poller: Poller<MockTransport> =
             poller_with_reconnects(vec![], persistent_failures(), vec![Pid::EngineSpeed]);
-        let _ = poller.reconnect();
+        let _ = poller.reconnect(|_, _, _| {});
 
         let expected: usize = 3;
         let actual: usize = poller.elm327.transport().reconnects();
@@ -540,7 +544,7 @@ mod tests {
         );
 
         let expected: Result<(), ObdError> = Ok(());
-        let actual: Result<(), ObdError> = poller.reconnect();
+        let actual: Result<(), ObdError> = poller.reconnect(|_, _, _| {});
 
         assert_eq!(actual, expected);
     }
@@ -554,7 +558,7 @@ mod tests {
         );
 
         let expected: Result<(), ObdError> = Ok(());
-        let actual: Result<(), ObdError> = poller.reconnect();
+        let actual: Result<(), ObdError> = poller.reconnect(|_, _, _| {});
 
         assert_eq!(actual, expected);
     }
@@ -566,10 +570,57 @@ mod tests {
             vec![],
             vec![Pid::EngineSpeed],
         );
-        let _ = poller.reconnect();
+        let _ = poller.reconnect(|_, _, _| {});
 
         let expected: usize = 2;
         let actual: usize = poller.elm327.transport().reconnects();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_two_failures_then_success_when_reconnect_then_reports_each_failed_attempt() {
+        let mut poller: Poller<MockTransport> = poller_with_reconnects(
+            init_answers(),
+            two_failures_then_success(),
+            vec![Pid::EngineSpeed],
+        );
+        let mut failed_attempts: Vec<(u32, u32, ObdError)> = vec![];
+        let _ = poller.reconnect(|attempt, max_attempts, error| {
+            failed_attempts.push((attempt, max_attempts, error.clone()))
+        });
+
+        let expected: Vec<(u32, u32, ObdError)> = vec![
+            (1, 3, ObdError::Transport(TransportError::Disconnected)),
+            (2, 3, ObdError::Transport(TransportError::Disconnected)),
+        ];
+        let actual: Vec<(u32, u32, ObdError)> = failed_attempts;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_persistent_failure_when_reconnect_then_reports_all_but_the_returned_last_attempt() {
+        let mut poller: Poller<MockTransport> =
+            poller_with_reconnects(vec![], persistent_failures(), vec![Pid::EngineSpeed]);
+        let mut failed_attempts: Vec<u32> = vec![];
+        let _ = poller.reconnect(|attempt, _, _| failed_attempts.push(attempt));
+
+        let expected: Vec<u32> = vec![1, 2];
+        let actual: Vec<u32> = failed_attempts;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_reconnect_succeeds_first_time_when_reconnect_then_reports_no_failed_attempt() {
+        let mut poller: Poller<MockTransport> =
+            poller_with_reconnects(init_answers(), vec![], vec![Pid::EngineSpeed]);
+        let mut failed_attempts: usize = 0;
+        let _ = poller.reconnect(|_, _, _| failed_attempts += 1);
+
+        let expected: usize = 0;
+        let actual: usize = failed_attempts;
 
         assert_eq!(actual, expected);
     }
@@ -580,7 +631,7 @@ mod tests {
         reads.push(Ok(b"41 0C 14 5F \r\r>".to_vec()));
         let mut poller: Poller<MockTransport> =
             poller_with_reconnects(reads, vec![], vec![Pid::EngineSpeed]);
-        poller.reconnect().unwrap();
+        poller.reconnect(|_, _, _| {}).unwrap();
         let _ = poller.poll_cycle();
 
         let expected: &[u8] = b"ATZ\rATE0\rATL0\rATS0\rATH0\r010C\r";
@@ -605,7 +656,7 @@ mod tests {
         ]);
 
         let supported: SupportedPidsMask =
-            wait_for_supported_pids(&mut elm327, Duration::ZERO).unwrap();
+            wait_for_supported_pids(&mut elm327, Duration::ZERO, |_| {}).unwrap();
 
         assert!(supported.contains(Pid::EngineSpeed));
         assert_eq!(elm327.transport().written(), b"0100\r0100\r");
@@ -619,7 +670,7 @@ mod tests {
         ]);
 
         let supported: SupportedPidsMask =
-            wait_for_supported_pids(&mut elm327, Duration::ZERO).unwrap();
+            wait_for_supported_pids(&mut elm327, Duration::ZERO, |_| {}).unwrap();
 
         assert!(supported.contains(Pid::EngineSpeed));
         assert_eq!(elm327.transport().written(), b"0100\r0100\r");
@@ -634,7 +685,7 @@ mod tests {
         ]);
 
         let supported: SupportedPidsMask =
-            wait_for_supported_pids(&mut elm327, Duration::ZERO).unwrap();
+            wait_for_supported_pids(&mut elm327, Duration::ZERO, |_| {}).unwrap();
 
         assert!(supported.contains(Pid::EngineSpeed));
         assert_eq!(elm327.transport().written(), b"0100\r0100\r");
@@ -646,7 +697,7 @@ mod tests {
 
         let expected: Result<SupportedPidsMask, ObdError> = Err(ObdError::UnknownCommand);
         let actual: Result<SupportedPidsMask, ObdError> =
-            wait_for_supported_pids(&mut elm327, Duration::ZERO);
+            wait_for_supported_pids(&mut elm327, Duration::ZERO, |_| {});
 
         assert_eq!(actual, expected);
         assert_eq!(elm327.transport().written(), b"0100\r");
@@ -659,7 +710,54 @@ mod tests {
         let expected: Result<SupportedPidsMask, ObdError> =
             Err(ObdError::Transport(TransportError::Disconnected));
         let actual: Result<SupportedPidsMask, ObdError> =
-            wait_for_supported_pids(&mut elm327, Duration::ZERO);
+            wait_for_supported_pids(&mut elm327, Duration::ZERO, |_| {});
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_no_data_twice_then_valid_response_when_wait_for_supported_pids_then_reports_each_wait()
+    {
+        let mut elm327: Elm327<MockTransport> = elm327(vec![
+            Ok(b"NO DATA\r\r>".to_vec()),
+            Ok(b"CAN ERROR\r\r>".to_vec()),
+            Ok(b"41 00 98 3A 80 12 \r\r>".to_vec()),
+        ]);
+        let mut waits: Vec<ObdError> = vec![];
+        let _ = wait_for_supported_pids(&mut elm327, Duration::ZERO, |error| {
+            waits.push(error.clone())
+        });
+
+        let expected: Vec<ObdError> = vec![
+            ObdError::NoData,
+            ObdError::BusError("CAN ERROR".to_string()),
+        ];
+        let actual: Vec<ObdError> = waits;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_valid_response_when_wait_for_supported_pids_then_reports_no_wait() {
+        let mut elm327: Elm327<MockTransport> =
+            elm327(vec![Ok(b"41 00 98 3A 80 12 \r\r>".to_vec())]);
+        let mut waits: usize = 0;
+        let _ = wait_for_supported_pids(&mut elm327, Duration::ZERO, |_| waits += 1);
+
+        let expected: usize = 0;
+        let actual: usize = waits;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_unknown_command_when_wait_for_supported_pids_then_reports_no_wait() {
+        let mut elm327: Elm327<MockTransport> = elm327(vec![Ok(b"?\r\r>".to_vec())]);
+        let mut waits: usize = 0;
+        let _ = wait_for_supported_pids(&mut elm327, Duration::ZERO, |_| waits += 1);
+
+        let expected: usize = 0;
+        let actual: usize = waits;
 
         assert_eq!(actual, expected);
     }

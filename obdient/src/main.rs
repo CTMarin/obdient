@@ -1,31 +1,15 @@
-use std::{thread::sleep, time::Duration};
+use std::time::Duration;
 
 use clap::{ArgGroup, Parser};
 use obdient::{
-    elm327::Elm327,
-    error::{ObdError, ObdErrorKind},
-    pid::{Pid, SupportedPidsMask},
-    poller::{CycleReport, Poller, policy::RetryPolicy, wait_for_supported_pids},
+    error::ObdError,
+    poller::CycleReport,
+    session::{self, SessionConfig, SessionEvent},
     transport::{Transport, serial::SerialTransport, tcp::TcpTransport},
 };
 
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-const RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
-const SEARCH_TIMEOUT: Duration = Duration::from_secs(15);
-const VEHICLE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
-const RECONNECT_POLICY: RetryPolicy = RetryPolicy {
-    max_attempts: 5,
-    initial_backoff: Duration::from_secs(1),
-    max_backoff: Duration::from_secs(8),
-};
-const PIDS: [Pid; 5] = [
-    Pid::EngineSpeed,
-    Pid::VehicleSpeed,
-    Pid::EngineCoolantTemperature,
-    Pid::ThrottlePosition,
-    Pid::FuelTankLevel,
-];
 
 #[derive(Parser)]
 #[command(group(
@@ -61,47 +45,33 @@ fn main() -> Result<(), ObdError> {
             args.interval_ms,
         ),
         _ => unreachable!("clap ArgGroup guarantees exactly one transport"),
-    }
+    }?;
+
+    Ok(())
 }
 
 fn run<T: Transport>(transport: T, interval_ms: u64) -> Result<(), ObdError> {
-    let mut elm327_driver: Elm327<T> = Elm327::new(transport, RESPONSE_TIMEOUT, SEARCH_TIMEOUT);
+    let config: SessionConfig = SessionConfig {
+        cycle_interval: Duration::from_millis(interval_ms),
+        ..SessionConfig::default()
+    };
 
-    elm327_driver.initialize()?;
-
-    let supported_pids_mask: SupportedPidsMask =
-        wait_for_supported_pids(&mut elm327_driver, VEHICLE_RETRY_INTERVAL)?;
-    let (supported_pids, unsupported_pids): (Vec<Pid>, Vec<Pid>) = PIDS
-        .into_iter()
-        .partition(|pid| supported_pids_mask.contains(*pid));
-    for pid in unsupported_pids {
-        eprintln!("PID {pid:?}: not supported by vehicle")
-    }
-
-    let mut poller: Poller<T> = Poller::new(
-        elm327_driver,
-        supported_pids,
-        RetryPolicy::default(),
-        RECONNECT_POLICY,
-    );
-
-    while poller.has_active_pids() {
-        match poller.poll_cycle() {
-            Ok(report) => print_report(&report),
-            Err(error) if error.kind() == ObdErrorKind::VehicleUnavailable => {
-                eprintln!("{error}")
-            }
-            Err(error) if error.kind() == ObdErrorKind::ConnectionLost => {
-                eprintln!("connection lost: {error}, reconnecting");
-                poller.reconnect()?;
-                eprintln!("reconnected")
-            }
-            Err(error) => return Err(error),
-        }
-        sleep(Duration::from_millis(interval_ms));
-    }
+    session::run(transport, &config, |event| match event {
+        SessionEvent::Unsupported(pid) => eprintln!("PID {pid:?}: not supported by vehicle"),
+        SessionEvent::Report(report) => print_report(report),
+        SessionEvent::VehicleUnavailable(error) => eprintln!("{error}"),
+        SessionEvent::ConnectionLost(error) => eprintln!("connection lost: {error}, reconnecting"),
+        SessionEvent::Reconnected => eprintln!("reconnected"),
+        SessionEvent::WaitingForVehicle(error) => eprintln!("waiting for vehicle: {error}"),
+        SessionEvent::ReconnectAttemptFailed {
+            attempt,
+            max_attempts,
+            error,
+        } => eprintln!("reconnect attempt {attempt}/{max_attempts} failed: {error}"),
+    })?;
 
     eprintln!("no PIDs left to poll");
+
     Ok(())
 }
 
