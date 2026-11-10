@@ -621,6 +621,7 @@ dependencies = [
  "embuild",
  "esp-idf-svc",
  "log",
+ "obdient",
 ]
 
 [[package]]
@@ -984,6 +985,13 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "obdient"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.21",
 ]
 
 [[package]]
