@@ -5,6 +5,7 @@ target/
 .idea/
 
 ROADMAP.md
+roadmap/
 legacy/
 esp32s3_rustobd/
 elm.log
