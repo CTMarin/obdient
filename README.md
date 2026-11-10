@@ -64,6 +64,21 @@ The emulator also offers a pseudo-terminal when you start it without `-n`. On ma
 
 If the vehicle doesn't answer at startup, the program prints `waiting for vehicle: ...` and tries again every 2 s, so you can start it before the ignition is on. If a PID fails while polling, the error is printed and the cycle moves on to the next one. If the vehicle stops responding, the driver reports it and tries again on the next cycle. You can try both by typing `engineoff` in the emulator console. If the connection to the adapter drops while polling, the program prints `connection lost: ...`, reconnects and runs the AT setup again. It makes up to 5 attempts, waiting 1, 2, 4 and 8 s between them, and prints `reconnected` when it's back or exits with the last error. To try it, stop the emulator and start it again within about 15 s. A connection that fails at startup isn't retried, because that usually means a wrong address or port. The emulator's default scenario always reports the throttle at 100 %. Run `elm -n 35000 -s car` for values that change.
 
+### Cargo features
+
+Serial support and the CLI are behind Cargo features. Both are on by default.
+
+| Feature  | Enables                                       | Dependency   |
+|----------|-----------------------------------------------|--------------|
+| `serial` | `SerialTransport`                             | `serialport` |
+| `cli`    | the `obdient` binary (it also needs `serial`) | `clap`       |
+
+To use the library without them, turn the defaults off. The ESP32-S3 firmware does this, because `serialport` doesn't build for ESP-IDF:
+
+```toml
+obdient = { path = "../obdient", default-features = false }
+```
+
 ## How it works
 
 The code is split into layers, each of which only knows about the one below:
@@ -101,6 +116,12 @@ cargo test
 
 This runs the unit tests (using a mock transport, so no hardware or network is needed) and some integration tests for the TCP transport against a local listener.
 
+CI also runs clippy and the tests without the default features, so code that needs `serialport` or `clap` can't slip into the core library:
+
+```sh
+cargo test --no-default-features
+```
+
 The serial integration tests use pseudo-terminal pairs. They need Linux, so on macOS only two of them run. There is a script that runs the whole suite in a Docker container:
 
 ```sh
@@ -130,6 +151,7 @@ obdient/
 │   └── transport/       TCP and serial transports, and a mock used in tests
 ├── scripts/             Linux test runner (Docker)
 └── tests/               integration tests (TCP, serial, emulator)
+firmware/                ESP32-S3 firmware (ESP-IDF). So far it only decodes a fixed response on the board.
 ```
 
 ## Roadmap
