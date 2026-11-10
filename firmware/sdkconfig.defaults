@@ -10,3 +10,6 @@ CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=4096
 # that allocate large stack variables; or better yet - use 
 # `std::thread::Builder::new().stack_size(XXX)` for spawning
 CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=4096
+
+# Wi-Fi pushes the app past the default 1 MB factory partition
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y

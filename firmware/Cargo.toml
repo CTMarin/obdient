@@ -18,6 +18,7 @@ opt-level = "z"
 log = "0.4"
 esp-idf-svc = { version = "0.53", features = ["critical-section"] }
 obdient = { path = "../obdient", default-features = false }
+anyhow = "1.0.104"
 
 [build-dependencies]
 embuild = "0.33.5"
