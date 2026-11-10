@@ -6,7 +6,7 @@ I started it as a way to learn how to talk to a real device from Rust. Most of i
 
 ## Status
 
-Early, but it works end to end over TCP against [ELM327-emulator](https://github.com/Ircama/ELM327-emulator). There is now a serial transport too. I tested it against pseudo-terminals on Linux, but I haven't run it against the emulator or a physical adapter yet. On macOS `serialport` can't open a pseudo-terminal (see [Usage](#usage)). See the [roadmap](#roadmap).
+Early, but it works end to end over TCP against [ELM327-emulator](https://github.com/Ircama/ELM327-emulator). There is now a serial transport too. I tested it against pseudo-terminals on Linux, but I haven't run it against the emulator or a physical adapter yet. On macOS `serialport` can't open a pseudo-terminal (see [Usage](#usage)). The same driver also runs on an ESP32-S3: over Wi-Fi it polls the emulator, reconnects when the emulator restarts and respects the connect timeout (see [ESP32-S3 firmware](#esp32-s3-firmware)). It doesn't talk to an adapter over UART yet. See the [roadmap](#roadmap).
 
 ## What it reads
 
@@ -79,12 +79,44 @@ To use the library without them, turn the defaults off. The ESP32-S3 firmware do
 obdient = { path = "../obdient", default-features = false }
 ```
 
+## ESP32-S3 firmware
+
+`firmware/` runs the same driver on an ESP32-S3 with ESP-IDF (Rust std). For now it joins Wi-Fi and polls the emulator over TCP, using the same `TcpTransport` and polling loop as the CLI, and writes the readings to the ESP-IDF log. On the board I checked that it reads the same values as the CLI, reports when the vehicle stops responding (`engineoff`), reconnects when the emulator is stopped and started again, and gives up on a connect after 5 s.
+
+It needs the Xtensa Rust toolchain and two tools:
+
+```sh
+cargo install --locked espup ldproxy cargo-espflash
+espup install                      # then load ~/export-esp.sh in your shell profile
+```
+
+The Wi-Fi credentials and the emulator's address are read at compile time from the environment. Put them in `firmware/.env`, which git ignores:
+
+```sh
+WIFI_SSID=...
+WIFI_PASS=...
+OBD_TCP_ADDRESS=192.168.1.20:35000   # the computer running the emulator
+```
+
+Then build, flash and open the monitor:
+
+```sh
+cd firmware
+set -a; source .env; set +a
+cargo espflash flash --monitor --baud 921600
+```
+
+- The first build downloads ESP-IDF v6.1 and its tools into `firmware/.embuild/`, so it takes a while.
+- The ESP32-S3 only does 2.4 GHz Wi-Fi, and the emulator has to accept connections from the network, not only from `localhost`.
+- Flash with `cargo espflash`, not `cargo run`. It writes the bootloader and partition table built by ESP-IDF together with the app. With Wi-Fi the app is bigger than 1 MB, so the firmware uses ESP-IDF's large single-app partition table.
+
 ## How it works
 
 The code is split into layers, each of which only knows about the one below:
 
 ```
 main.rs     CLI and printing
+session.rs  the polling loop shared by the CLI and the firmware: setup, poll, reconnect
 poller.rs   startup wait, one polling cycle (retries, what to do with each error) and reconnection
 elm327.rs   ELM327 protocol: AT setup, send a command, read the answer
 pid.rs      parse the text response and decode the value
@@ -92,6 +124,7 @@ transport   moves bytes (TCP or serial)
 ```
 
 - **Transport** is a trait with `read`, `write_all` and `reconnect`. It doesn't know anything about OBD, so adding serial didn't touch the protocol code.
+- **Session events.** The polling loop lives in the library (`session::run`), so the CLI and the firmware share it. The library never prints. It reports what happens (a cycle's readings, waiting for the vehicle, a lost connection, a failed reconnect attempt) as a `SessionEvent` passed to a closure, and each program decides how to show it: the CLI prints to the terminal, the firmware writes to the ESP-IDF log. Clippy's `print_stdout` and `print_stderr` lints keep prints out of the library.
 - **Reconnect closes first.** Both transports close the old connection before opening the new one, even if the new one then fails. Serial ports are opened in exclusive mode, so opening again while the old one is still open fails with EBUSY. A test against a real pty caught this. Over TCP, an adapter that serves one client at a time might keep serving the old connection and never take the new one. After a failed reconnect, reads and writes return `Disconnected`.
 - **Connect timeout.** A TCP connect gives up after 5 s. Without it, a host that doesn't answer blocks for the OS timeout, which is about 75 s on macOS and a couple of minutes on Linux. An address can resolve to more than one (`localhost` is `::1` and `127.0.0.1`), so each one is tried in turn. A connect timeout is reported as an I/O error, not as the read `Timeout`, because it means the connection couldn't be made. Name resolution isn't covered by the timeout, but adapters are usually reached by IP address.
 - **Framing.** TCP and serial are byte streams, so an answer can arrive in pieces. `Elm327` keeps reading until the `>` prompt, with an overall deadline and a size limit so a stuck or noisy adapter can't block it forever.
@@ -105,7 +138,7 @@ transport   moves bytes (TCP or serial)
 - **Vehicle not responding.** `NO DATA` alone can't tell an unsupported PID from a car with the ignition off. At startup the driver keeps asking for the supported PIDs until the vehicle answers. While polling, a cycle with no readings and at least one `NO DATA` counts as the vehicle not responding: nothing is dropped and the next cycle tries again.
 - **Reconnect.** If the connection is lost while polling, the poller reconnects the transport and runs the AT setup again. First it clears the resync state of the old connection, so the first command doesn't wait for a `>` that can't arrive on the new one. It keeps the PIDs it was polling and doesn't ask `0100` again, since it's the same adapter and the same vehicle. Each attempt covers both steps, and any error counts as a failed attempt. After 5 attempts it gives up. The limit is needed even when the error looks recoverable: when a USB adapter is unplugged its device path disappears (ENOENT), which maps to `Disconnected`, so without a limit it would retry forever. The cycle that was cut is lost, not resumed.
 
-Retries and `?` are tested with the mock transport only. Runs against the emulator cover normal polling, the vehicle not responding (`engineoff`), waiting at startup until it answers, recovery when it answers again, `NO DATA` for some PIDs in one cycle, and the connection dropping: stopping the emulator and starting it again resumes the readings, and leaving it stopped exits after 5 failed attempts. The reconnect itself (number of attempts, the last error, running the AT setup again) is also covered with the mock transport. I checked the connect timeout by hand against 192.0.2.1, an address reserved for documentation that nobody answers: the program gives up after 5 s. The resync bug with late answers depended on read timing and I never reproduced it on demand, so a unit test with the mock transport covers that fix.
+Retries and `?` are tested with the mock transport only. Runs against the emulator cover normal polling, the vehicle not responding (`engineoff`), waiting at startup until it answers, recovery when it answers again, `NO DATA` for some PIDs in one cycle, and the connection dropping: stopping the emulator and starting it again resumes the readings, and leaving it stopped exits after 5 failed attempts. The reconnect itself (number of attempts, the last error, running the AT setup again) is also covered with the mock transport, and so are the session events and their order. I checked the connect timeout by hand against 192.0.2.1, an address reserved for documentation that nobody answers: the program gives up after 5 s. The resync bug with late answers depended on read timing and I never reproduced it on demand, so a unit test with the mock transport covers that fix.
 
 ## Tests
 
@@ -142,6 +175,7 @@ cargo test --test emulator_tcp -- --ignored
 obdient/
 ├── src/
 │   ├── main.rs          CLI
+│   ├── session.rs       polling loop shared by the CLI and the firmware
 │   ├── poller.rs        polling cycle
 │   ├── poller/          retry policy
 │   ├── elm327.rs        ELM327 protocol layer
@@ -151,7 +185,7 @@ obdient/
 │   └── transport/       TCP and serial transports, and a mock used in tests
 ├── scripts/             Linux test runner (Docker)
 └── tests/               integration tests (TCP, serial, emulator)
-firmware/                ESP32-S3 firmware (ESP-IDF). So far it only decodes a fixed response on the board.
+firmware/                ESP32-S3 firmware (ESP-IDF): polls the emulator over Wi-Fi
 ```
 
 ## Roadmap
@@ -162,6 +196,7 @@ firmware/                ESP32-S3 firmware (ESP-IDF). So far it only decodes a f
 - [x] Reconnect when the adapter goes away
 - [x] Connection timeout for Wi-Fi adapters
 - [ ] Try it with a real ELM327 adapter
+- [x] Run it on my ESP32-S3 over Wi-Fi against the emulator
 - [ ] Run it on my ESP32-S3 talking to the adapter over UART
 
 ## License
