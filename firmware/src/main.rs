@@ -8,7 +8,8 @@ use esp_idf_svc::{
     wifi::{AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi},
 };
 use obdient::{
-    elm327::Elm327, pid::SupportedPidsMask, poller::wait_for_supported_pids,
+    poller::CycleReport,
+    session::{self, SessionConfig, SessionEvent},
     transport::tcp::TcpTransport,
 };
 
@@ -18,9 +19,6 @@ const OBD_TCP_ADDRESS: &str = env!("OBD_TCP_ADDRESS");
 
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-const RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
-const SEARCH_TIMEOUT: Duration = Duration::from_secs(15);
-const VEHICLE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
 fn main() -> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
@@ -34,25 +32,48 @@ fn main() -> anyhow::Result<()> {
         EspWifi::new(peripherals.modem, sys_loop.clone(), Some(nvs))?,
         sys_loop,
     )?;
-
     connect_wifi(&mut wifi)?;
-
     let ip_info: IpInfo = wifi.wifi().sta_netif().get_ip_info()?;
-
     log::info!("Wifi DHCP info: {ip_info:?}");
 
     let tcp_transport: TcpTransport =
         TcpTransport::connect(OBD_TCP_ADDRESS, READ_TIMEOUT, CONNECT_TIMEOUT)?;
-    let mut elm327_driver: Elm327<TcpTransport> =
-        Elm327::new(tcp_transport, RESPONSE_TIMEOUT, SEARCH_TIMEOUT);
+    let config: SessionConfig = SessionConfig::default();
+    if let Err(error) = session::run(tcp_transport, &config, |event| match event {
+        SessionEvent::Unsupported(pid) => log::warn!("PID {pid:?}: not supported by vehicle"),
+        SessionEvent::Report(report) => print_report(report),
+        SessionEvent::VehicleUnavailable(error) => log::warn!("{error}"),
+        SessionEvent::ConnectionLost(error) => {
+            log::warn!("connection lost: {error}, reconnecting")
+        }
+        SessionEvent::Reconnected => log::info!("reconnected"),
+        SessionEvent::WaitingForVehicle(error) => log::warn!("waiting for vehicle: {error}"),
+        SessionEvent::ReconnectAttemptFailed {
+            attempt,
+            max_attempts,
+            error,
+        } => log::warn!("reconnect attempt {attempt}/{max_attempts} failed: {error}"),
+    }) {
+        log::error!("session ended: {error}");
+        return Err(error.into());
+    };
 
-    elm327_driver.initialize()?;
-    let supported_pids: SupportedPidsMask =
-        wait_for_supported_pids(&mut elm327_driver, VEHICLE_RETRY_INTERVAL)?;
-
-    log::info!("{:?}", supported_pids);
+    log::warn!("no PIDs left to poll");
 
     Ok(())
+}
+
+fn print_report(report: &CycleReport) {
+    for reading in &report.readings {
+        log::info!("{reading}");
+    }
+    for (pid, error) in &report.failures {
+        log::warn!("PID {pid:?}: {error}");
+    }
+    for pid in &report.newly_unavailable {
+        log::warn!("PID {pid:?}: marked unavailable")
+    }
+    log::info!("----------------")
 }
 
 fn connect_wifi(wifi: &mut BlockingWifi<EspWifi<'static>>) -> anyhow::Result<()> {
