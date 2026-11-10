@@ -6,7 +6,21 @@ description = "OBD-II driver for ELM327 adapters"
 license = "MIT"
 repository = "https://github.com/CTMarin/obdient"
 
+[features]
+default = ["serial", "cli"]
+serial = ["dep:serialport"]
+cli = ["dep:clap"]
+
 [dependencies]
-clap = { version = "4.6.7", features = ["derive"] }
-serialport = { version = "4.10.1", default-features = false }
+clap = { version = "4.6.7", features = ["derive"], optional = true }
+serialport = { version = "4.10.1", default-features = false, optional = true }
 thiserror = "2.0.21"
+
+[[bin]]
+name = "obdient"
+path = "src/main.rs"
+required-features = ["serial", "cli"]
+
+[[test]]
+name = "serial_transport"
+required-features = ["serial"]

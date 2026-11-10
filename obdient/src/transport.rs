@@ -2,6 +2,7 @@ use crate::error::TransportError;
 
 #[cfg(test)]
 pub mod mock;
+#[cfg(feature = "serial")]
 pub mod serial;
 pub mod tcp;
 
