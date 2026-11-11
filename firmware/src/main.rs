@@ -1,5 +1,3 @@
-mod transport;
-
 use std::time::Duration;
 
 use esp_idf_svc::{
@@ -9,9 +7,9 @@ use esp_idf_svc::{
     nvs::EspDefaultNvsPartition,
     wifi::{AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi},
 };
+use firmware::log_event;
 use obdient::{
-    poller::CycleReport,
-    session::{self, SessionConfig, SessionEvent},
+    session::{self, SessionConfig},
     transport::tcp::TcpTransport,
 };
 
@@ -41,21 +39,7 @@ fn main() -> anyhow::Result<()> {
     let tcp_transport: TcpTransport =
         TcpTransport::connect(OBD_TCP_ADDRESS, READ_TIMEOUT, CONNECT_TIMEOUT)?;
     let config: SessionConfig = SessionConfig::default();
-    if let Err(error) = session::run(tcp_transport, &config, |event| match event {
-        SessionEvent::Unsupported(pid) => log::warn!("PID {pid:?}: not supported by vehicle"),
-        SessionEvent::Report(report) => print_report(report),
-        SessionEvent::VehicleUnavailable(error) => log::warn!("{error}"),
-        SessionEvent::ConnectionLost(error) => {
-            log::warn!("connection lost: {error}, reconnecting")
-        }
-        SessionEvent::Reconnected => log::info!("reconnected"),
-        SessionEvent::WaitingForVehicle(error) => log::warn!("waiting for vehicle: {error}"),
-        SessionEvent::ReconnectAttemptFailed {
-            attempt,
-            max_attempts,
-            error,
-        } => log::warn!("reconnect attempt {attempt}/{max_attempts} failed: {error}"),
-    }) {
+    if let Err(error) = session::run(tcp_transport, &config, log_event) {
         log::error!("session ended: {error}");
         return Err(error.into());
     };
@@ -63,19 +47,6 @@ fn main() -> anyhow::Result<()> {
     log::warn!("no PIDs left to poll");
 
     Ok(())
-}
-
-fn print_report(report: &CycleReport) {
-    for reading in &report.readings {
-        log::info!("{reading}");
-    }
-    for (pid, error) in &report.failures {
-        log::warn!("PID {pid:?}: {error}");
-    }
-    for pid in &report.newly_unavailable {
-        log::warn!("PID {pid:?}: marked unavailable")
-    }
-    log::info!("----------------")
 }
 
 fn connect_wifi(wifi: &mut BlockingWifi<EspWifi<'static>>) -> anyhow::Result<()> {
