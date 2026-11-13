@@ -10,8 +10,8 @@ Early, but it works end to end:
 
 - **Emulator:** polls [ELM327-emulator](https://github.com/Ircama/ELM327-emulator) over TCP.
 - **Real car:** reads live data from a 2012 Volkswagen (diesel) through a USB ELM327 adapter and the serial transport. See [real hardware](docs/real-hardware.md).
-- **ESP32-S3:** the same driver runs on the board and polls the emulator over UART, through a USB-UART adapter that stands in for a UART ELM327. A Wi-Fi example polls it over TCP. See [firmware](docs/firmware.md).
-- **Not yet:** a real ELM327 over UART, and a second car.
+- **ESP32-S3:** the same driver runs on the board. It polls the emulator over UART through a USB-UART adapter, and the Volkswagen through that same adapter, bridged on the laptop to the USB ELM327. A Wi-Fi example polls the emulator over TCP. See [firmware](docs/firmware.md).
+- **Not yet:** a UART ELM327 wired straight to the board, and a second car.
 
 ## What it reads
 
@@ -117,7 +117,8 @@ The unit tests use a mock transport, so they need no hardware. The serial tests 
 - [ ] Try it on a second car (2004 Ford)
 - [x] Run it on my ESP32-S3 over Wi-Fi against the emulator
 - [x] Run it on my ESP32-S3 over UART against the emulator, through a USB-UART adapter
-- [ ] Run it on my ESP32-S3 talking to a real ELM327 over UART
+- [x] Run it on my ESP32-S3 talking to a real ELM327 over UART, bridged through the laptop
+- [ ] Wire a UART ELM327 straight to the ESP32-S3
 
 ## License
 
