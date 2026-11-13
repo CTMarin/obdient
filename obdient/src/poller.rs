@@ -435,6 +435,7 @@ mod tests {
 
     fn init_answers() -> Vec<Result<Vec<u8>, TransportError>> {
         vec![
+            Ok(b"ATI\rELM327 v1.5\r\r>".to_vec()),
             Ok(b"ATZ\r\r\rELM327 v1.5\r\r>".to_vec()),
             Ok(b"ATE0\rOK\r\r>".to_vec()),
             Ok(b"OK\r\r>".to_vec()),
@@ -467,7 +468,10 @@ mod tests {
     }
 
     fn unknown_atz_answer_then_init_answers() -> Vec<Result<Vec<u8>, TransportError>> {
-        let mut reads: Vec<Result<Vec<u8>, TransportError>> = vec![Ok(b"?\r\r>".to_vec())];
+        let mut reads: Vec<Result<Vec<u8>, TransportError>> = vec![
+            Ok(b"ATI\rELM327 v1.5\r\r>".to_vec()),
+            Ok(b"?\r\r>".to_vec()),
+        ];
         reads.extend(init_answers());
         reads
     }
@@ -634,7 +638,7 @@ mod tests {
         poller.reconnect(|_, _, _| {}).unwrap();
         let _ = poller.poll_cycle();
 
-        let expected: &[u8] = b"ATZ\rATE0\rATL0\rATS0\rATH0\r010C\r";
+        let expected: &[u8] = b"ATI\rATZ\rATE0\rATL0\rATS0\rATH0\r010C\r";
         let actual: &[u8] = poller.elm327.transport().written();
 
         assert_eq!(actual, expected);

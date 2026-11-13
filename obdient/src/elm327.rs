@@ -6,6 +6,7 @@ use crate::{
     transport::Transport,
 };
 
+const SYNC_COMMAND: &str = "ATI";
 const SEARCH_MARKER: &[u8] = b"SEARCHING";
 const MAX_RESPONSE_LEN: usize = 256;
 const READ_CHUNK_SIZE: usize = 64;
@@ -37,6 +38,8 @@ impl<T: Transport> Elm327<T> {
     }
 
     pub fn initialize(&mut self) -> Result<(), ObdError> {
+        self.clear_adapter_input()?;
+
         for (command, expected_answer) in INIT_SEQUENCE {
             let response: String = self.send_command(command)?;
             if !response.contains(expected_answer) {
@@ -76,6 +79,17 @@ impl<T: Transport> Elm327<T> {
             }
 
             base_code += 0x20;
+        }
+    }
+
+    // The adapter buffers every byte until a carriage return. Noise on the line, such as
+    // the byte an ESP32 pin emits while the board resets, would be merged with ATZ and
+    // rejected with "?". A throwaway command absorbs that noise. Only transport errors
+    // stop here: any other failure leaves the driver desynced, so ATZ drains first.
+    fn clear_adapter_input(&mut self) -> Result<(), ObdError> {
+        match self.send_command(SYNC_COMMAND) {
+            Err(error @ ObdError::Transport(_)) => Err(error),
+            _ => Ok(()),
         }
     }
 
@@ -592,7 +606,11 @@ mod tests {
         Ok(b"ATZ\r\r\rELM327 v1.5\r\r>".to_vec())
     }
 
-    fn correct_init_answers() -> Vec<Result<Vec<u8>, TransportError>> {
+    fn sync_answer() -> Result<Vec<u8>, TransportError> {
+        Ok(b"ATI\rELM327 v1.5\r\r>".to_vec())
+    }
+
+    fn init_sequence_answers() -> Vec<Result<Vec<u8>, TransportError>> {
         vec![
             atz_answer(),
             Ok(b"ATE0\rOK\r\r>".to_vec()),
@@ -602,8 +620,14 @@ mod tests {
         ]
     }
 
+    fn correct_init_answers() -> Vec<Result<Vec<u8>, TransportError>> {
+        let mut answers: Vec<Result<Vec<u8>, TransportError>> = vec![sync_answer()];
+        answers.extend(init_sequence_answers());
+        answers
+    }
+
     fn atz_ok_then_unknown_command() -> Vec<Result<Vec<u8>, TransportError>> {
-        vec![atz_answer(), Ok(b"?\r\r>".to_vec())]
+        vec![sync_answer(), atz_answer(), Ok(b"?\r\r>".to_vec())]
     }
 
     #[test]
@@ -617,11 +641,11 @@ mod tests {
     }
 
     #[test]
-    fn given_correct_answers_when_initialize_then_writes_init_sequence() {
+    fn given_correct_answers_when_initialize_then_writes_sync_command_and_init_sequence() {
         let mut elm: Elm327<MockTransport> = elm(correct_init_answers(), one_second());
         let _ = elm.initialize();
 
-        let expected: &[u8] = b"ATZ\rATE0\rATL0\rATS0\rATH0\r";
+        let expected: &[u8] = b"ATI\rATZ\rATE0\rATL0\rATS0\rATH0\r";
         let actual: &[u8] = elm.transport.written();
 
         assert_eq!(actual, expected);
@@ -629,7 +653,8 @@ mod tests {
 
     #[test]
     fn given_unknown_command_answer_to_atz_when_initialize_then_returns_unexpected_response() {
-        let mut elm: Elm327<MockTransport> = elm(vec![Ok(b"?\r\r>".to_vec())], one_second());
+        let mut elm: Elm327<MockTransport> =
+            elm(vec![sync_answer(), Ok(b"?\r\r>".to_vec())], one_second());
 
         let expected: Result<(), ObdError> = Err(ObdError::UnexpectedResponse {
             command: "ATZ".to_string(),
@@ -658,7 +683,7 @@ mod tests {
         let mut elm: Elm327<MockTransport> = elm(atz_ok_then_unknown_command(), one_second());
         let _ = elm.initialize();
 
-        let expected: &[u8] = b"ATZ\rATE0\r";
+        let expected: &[u8] = b"ATI\rATZ\rATE0\r";
         let actual: &[u8] = elm.transport.written();
 
         assert_eq!(actual, expected);
@@ -667,7 +692,11 @@ mod tests {
     #[test]
     fn given_disconnect_after_atz_when_initialize_then_returns_transport_error() {
         let mut elm: Elm327<MockTransport> = elm(
-            vec![atz_answer(), Err(TransportError::Disconnected)],
+            vec![
+                sync_answer(),
+                atz_answer(),
+                Err(TransportError::Disconnected),
+            ],
             one_second(),
         );
 
@@ -679,11 +708,64 @@ mod tests {
 
     #[test]
     fn given_unexpected_answer_when_initialize_then_is_not_desynced() {
-        let mut elm: Elm327<MockTransport> = elm(vec![Ok(b"?\r\r>".to_vec())], one_second());
+        let mut elm: Elm327<MockTransport> =
+            elm(vec![sync_answer(), Ok(b"?\r\r>".to_vec())], one_second());
         let _ = elm.initialize();
 
         let expected: bool = false;
         let actual: bool = elm.desynced;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_garbage_merged_into_sync_command_when_initialize_then_returns_ok() {
+        let mut reads: Vec<Result<Vec<u8>, TransportError>> = vec![Ok(b"?\r\r>".to_vec())];
+        reads.extend(init_sequence_answers());
+        let mut elm: Elm327<MockTransport> = elm(reads, one_second());
+
+        let expected: Result<(), ObdError> = Ok(());
+        let actual: Result<(), ObdError> = elm.initialize();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_disconnect_on_sync_command_when_initialize_then_returns_transport_error() {
+        let mut elm: Elm327<MockTransport> =
+            elm(vec![Err(TransportError::Disconnected)], one_second());
+
+        let expected: Result<(), ObdError> = Err(ObdError::Transport(TransportError::Disconnected));
+        let actual: Result<(), ObdError> = elm.initialize();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_disconnect_on_sync_command_when_initialize_then_writes_only_sync_command() {
+        let mut elm: Elm327<MockTransport> =
+            elm(vec![Err(TransportError::Disconnected)], one_second());
+        let _ = elm.initialize();
+
+        let expected: &[u8] = b"ATI\r";
+        let actual: &[u8] = elm.transport.written();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_malformed_answer_to_sync_command_when_initialize_then_returns_ok() {
+        // The oversized answer flags the link as desynced; the drain before ATZ must clean it up.
+        let mut reads: Vec<Result<Vec<u8>, TransportError>> = vec![
+            Ok(vec![b'x'; 300]),
+            Ok(b"\r\r>".to_vec()),
+            Err(TransportError::Timeout),
+        ];
+        reads.extend(init_sequence_answers());
+        let mut elm: Elm327<MockTransport> = elm(reads, one_second());
+
+        let expected: Result<(), ObdError> = Ok(());
+        let actual: Result<(), ObdError> = elm.initialize();
 
         assert_eq!(actual, expected);
     }
@@ -710,11 +792,11 @@ mod tests {
     }
 
     #[test]
-    fn given_correct_init_answers_when_reconnect_then_writes_init_sequence() {
+    fn given_correct_init_answers_when_reconnect_then_writes_sync_command_and_init_sequence() {
         let mut elm: Elm327<MockTransport> = elm(correct_init_answers(), one_second());
         let _ = elm.reconnect();
 
-        let expected: &[u8] = b"ATZ\rATE0\rATL0\rATS0\rATH0\r";
+        let expected: &[u8] = b"ATI\rATZ\rATE0\rATL0\rATS0\rATH0\r";
         let actual: &[u8] = elm.transport.written();
 
         assert_eq!(actual, expected);

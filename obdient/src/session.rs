@@ -219,6 +219,7 @@ mod tests {
 
     fn init_answers() -> Vec<Result<Vec<u8>, TransportError>> {
         vec![
+            Ok(b"ATI\rELM327 v1.5\r\r>".to_vec()),
             Ok(b"ATZ\r\r\rELM327 v1.5\r\r>".to_vec()),
             Ok(b"ATE0\rOK\r\r>".to_vec()),
             Ok(b"OK\r\r>".to_vec()),
