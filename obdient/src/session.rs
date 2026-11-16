@@ -454,6 +454,23 @@ mod tests {
     }
 
     #[test]
+    fn given_borrowed_transport_when_run_twice_then_second_session_reuses_it() {
+        let mut script: Vec<Result<Vec<u8>, TransportError>> = reads(vec![unknown_command()]);
+        script.extend(reads(vec![unknown_command()]));
+        let mut transport: MockTransport = MockTransport::new(script, vec![]);
+        let session_config: SessionConfig = config(vec![Pid::EngineSpeed]);
+
+        let first: Result<(), ObdError> = run(&mut transport, &session_config, |_| {});
+        let second: Result<(), ObdError> = run(&mut transport, &session_config, |_| {});
+
+        let one_session: &[u8] = b"ATI\rATZ\rATE0\rATL0\rATS0\rATH0\r0100\r010C\r";
+        let expected = (Ok(()), Ok(()), one_session.repeat(2));
+        let actual = (first, second, transport.written().to_vec());
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn given_default_config_when_created_then_matches_cli_defaults() {
         let config: SessionConfig = SessionConfig::default();
 
