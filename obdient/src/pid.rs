@@ -611,6 +611,16 @@ mod tests {
     }
 
     #[test]
+    fn given_two_ecus_supporting_engine_speed_when_parse_supported_pids_then_keeps_it() {
+        // Both masks set bit 0x0010_0000 (PID 0C): merging must not cancel it out.
+        let raw: &str = "41 00 98 3A 80 13\r41 00 00 10 40 00\r\r>";
+        let expected: Result<u32, ObdError> = Ok(0x983A_C013);
+        let actual: Result<u32, ObdError> = parse_supported_pids(raw, 0x00);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn given_later_range_when_parse_supported_pids_then_returns_mask() {
         let expected: Result<u32, ObdError> = Ok(0x8000_0000);
         let actual: Result<u32, ObdError> = parse_supported_pids("41 20 80 00 00 00\r\r>", 0x20);

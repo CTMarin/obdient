@@ -535,6 +535,14 @@ mod tests {
     }
 
     #[test]
+    fn given_answer_longer_than_marker_without_it_when_is_searching_then_returns_false() {
+        let expected: bool = false;
+        let actual: bool = Elm327::<MockTransport>::is_searching(b"41 00 BE 3F A8 13");
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn given_failed_command_when_send_command_then_prompt_is_pending() {
         let mut elm: Elm327<MockTransport> =
             elm(vec![Err(TransportError::Disconnected)], one_second());
