@@ -10,6 +10,7 @@ use firmware::{log_event, transport::uart::UartTransport};
 use obdient::session::{self, SessionConfig};
 
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
+const SESSION_RESTART_DELAY: Duration = Duration::from_secs(5);
 
 fn main() -> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
@@ -28,14 +29,16 @@ fn main() -> anyhow::Result<()> {
         &uart_config,
     )?;
 
-    let uart_transport: UartTransport = UartTransport::new(uart, READ_TIMEOUT);
+    let mut uart_transport: UartTransport = UartTransport::new(uart, READ_TIMEOUT);
     let session_config: SessionConfig = SessionConfig::default();
-    if let Err(error) = session::run(uart_transport, &session_config, log_event) {
-        log::error!("session ended: {error}");
-        return Err(error.into());
-    };
 
-    log::warn!("no PIDs left to poll");
-
-    Ok(())
+    loop {
+        match session::run(&mut uart_transport, &session_config, log_event) {
+            Ok(()) => log::warn!("no PIDs left to poll, restarting in {SESSION_RESTART_DELAY:?}"),
+            Err(error) => {
+                log::error!("session ended: {error}, restarting in {SESSION_RESTART_DELAY:?}")
+            }
+        }
+        std::thread::sleep(SESSION_RESTART_DELAY);
+    }
 }
