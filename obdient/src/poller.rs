@@ -63,11 +63,13 @@ impl<T: Transport> Poller<T> {
             }
         }
 
-        let any_no_data: bool = report
+        // NO DATA means no ECU answered, and CAN ERROR usually means there is no
+        // CAN bus at all. With no reading in the cycle, the vehicle is not responding.
+        let any_vehicle_absence: bool = report
             .failures
             .iter()
-            .any(|(_, error)| *error == ObdError::NoData);
-        if report.readings.is_empty() && any_no_data {
+            .any(|(_, error)| matches!(error, ObdError::NoData | ObdError::CanError));
+        if report.readings.is_empty() && any_vehicle_absence {
             return Err(ObdError::NoVehicleResponse);
         }
 
@@ -209,10 +211,7 @@ mod tests {
 
         let expected: Result<CycleReport, ObdError> = Ok(CycleReport {
             readings: vec![Reading::VehicleSpeed(10)],
-            failures: vec![(
-                Pid::EngineSpeed,
-                ObdError::BusError("CAN ERROR".to_string()),
-            )],
+            failures: vec![(Pid::EngineSpeed, ObdError::CanError)],
             ..CycleReport::default()
         });
         let actual: Result<CycleReport, ObdError> = poller.poll_cycle();
@@ -327,9 +326,9 @@ mod tests {
         let mut poller: Poller<MockTransport> = poller(
             vec![
                 Ok(b"NO DATA\r\r>".to_vec()),
-                Ok(b"CAN ERROR\r\r>".to_vec()),
-                Ok(b"CAN ERROR\r\r>".to_vec()),
-                Ok(b"CAN ERROR\r\r>".to_vec()),
+                Ok(b"DATA ERROR\r\r>".to_vec()),
+                Ok(b"DATA ERROR\r\r>".to_vec()),
+                Ok(b"DATA ERROR\r\r>".to_vec()),
             ],
             vec![Pid::EngineSpeed, Pid::VehicleSpeed],
         );
@@ -379,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn given_all_retries_exhausted_when_poll_cycle_then_keeps_bus_errors_and_pids() {
+    fn given_all_can_errors_when_poll_cycle_then_returns_no_vehicle_response_and_keeps_pids() {
         let mut poller: Poller<MockTransport> = poller(
             vec![
                 Ok(b"CAN ERROR\r\r>".to_vec()),
@@ -392,15 +391,59 @@ mod tests {
             vec![Pid::EngineSpeed, Pid::VehicleSpeed],
         );
 
+        let expected: Result<CycleReport, ObdError> = Err(ObdError::NoVehicleResponse);
+        let actual: Result<CycleReport, ObdError> = poller.poll_cycle();
+
+        assert_eq!(actual, expected);
+        assert_eq!(
+            poller.active_pids,
+            vec![Pid::EngineSpeed, Pid::VehicleSpeed]
+        );
+    }
+
+    #[test]
+    fn given_can_error_and_exhausted_retries_when_poll_cycle_then_returns_no_vehicle_response() {
+        let mut poller: Poller<MockTransport> = poller(
+            vec![
+                Ok(b"CAN ERROR\r\r>".to_vec()),
+                Ok(b"CAN ERROR\r\r>".to_vec()),
+                Ok(b"CAN ERROR\r\r>".to_vec()),
+                Ok(b"DATA ERROR\r\r>".to_vec()),
+                Ok(b"DATA ERROR\r\r>".to_vec()),
+                Ok(b"DATA ERROR\r\r>".to_vec()),
+            ],
+            vec![Pid::EngineSpeed, Pid::VehicleSpeed],
+        );
+
+        let expected: Result<CycleReport, ObdError> = Err(ObdError::NoVehicleResponse);
+        let actual: Result<CycleReport, ObdError> = poller.poll_cycle();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_other_bus_errors_exhausted_when_poll_cycle_then_keeps_failures_and_pids() {
+        let mut poller: Poller<MockTransport> = poller(
+            vec![
+                Ok(b"DATA ERROR\r\r>".to_vec()),
+                Ok(b"DATA ERROR\r\r>".to_vec()),
+                Ok(b"DATA ERROR\r\r>".to_vec()),
+                Ok(b"BUS ERROR\r\r>".to_vec()),
+                Ok(b"BUS ERROR\r\r>".to_vec()),
+                Ok(b"BUS ERROR\r\r>".to_vec()),
+            ],
+            vec![Pid::EngineSpeed, Pid::VehicleSpeed],
+        );
+
         let expected: Result<CycleReport, ObdError> = Ok(CycleReport {
             failures: vec![
                 (
                     Pid::EngineSpeed,
-                    ObdError::BusError("CAN ERROR".to_string()),
+                    ObdError::BusError("DATA ERROR".to_string()),
                 ),
                 (
                     Pid::VehicleSpeed,
-                    ObdError::BusError("CAN ERROR".to_string()),
+                    ObdError::BusError("BUS ERROR".to_string()),
                 ),
             ],
             ..CycleReport::default()
@@ -667,7 +710,7 @@ mod tests {
     }
 
     #[test]
-    fn given_bus_error_then_valid_response_when_wait_for_supported_pids_then_returns_mask() {
+    fn given_can_error_then_valid_response_when_wait_for_supported_pids_then_returns_mask() {
         let mut elm327: Elm327<MockTransport> = elm327(vec![
             Ok(b"CAN ERROR\r\r>".to_vec()),
             Ok(b"41 00 98 3A 80 12 \r\r>".to_vec()),
@@ -732,10 +775,7 @@ mod tests {
             waits.push(error.clone())
         });
 
-        let expected: Vec<ObdError> = vec![
-            ObdError::NoData,
-            ObdError::BusError("CAN ERROR".to_string()),
-        ];
+        let expected: Vec<ObdError> = vec![ObdError::NoData, ObdError::CanError];
         let actual: Vec<ObdError> = waits;
 
         assert_eq!(actual, expected);

@@ -30,6 +30,8 @@ pub enum ObdError {
     UnexpectedResponse { command: String, response: String },
     #[error("no PID answered in this cycle, vehicle is not responding")]
     NoVehicleResponse,
+    #[error("CAN error: no ECU acknowledged the request")]
+    CanError,
 }
 
 impl ObdError {
@@ -43,7 +45,8 @@ impl ObdError {
             | ObdError::BusError(_)
             | ObdError::NotEnoughData { .. }
             | ObdError::Transport(TransportError::Timeout)
-            | ObdError::ResponseTimeout(_) => ObdErrorKind::Transient,
+            | ObdError::ResponseTimeout(_)
+            | ObdError::CanError => ObdErrorKind::Transient,
             ObdError::Transport(TransportError::Disconnected)
             | ObdError::Transport(TransportError::Io { .. })
             | ObdError::UnexpectedResponse { .. } => ObdErrorKind::ConnectionLost,
@@ -99,6 +102,14 @@ mod tests {
     fn given_bus_error_when_kind_then_returns_transient() {
         let expected: ObdErrorKind = ObdErrorKind::Transient;
         let actual: ObdErrorKind = ObdError::BusError(String::new()).kind();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_can_error_when_kind_then_returns_transient() {
+        let expected: ObdErrorKind = ObdErrorKind::Transient;
+        let actual: ObdErrorKind = ObdError::CanError.kind();
 
         assert_eq!(actual, expected);
     }

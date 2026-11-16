@@ -2,10 +2,9 @@ use std::fmt;
 
 use crate::error::ObdError;
 
-const BUS_ERRORS: [&str; 7] = [
+const BUS_ERRORS: [&str; 6] = [
     "BUS INIT",
     "BUS ERROR",
-    "CAN ERROR",
     "BUFFER FULL",
     "DATA ERROR",
     "FB ERROR",
@@ -119,6 +118,7 @@ fn parse_line(line: &str, code: u8) -> Option<Result<Vec<u8>, ObdError>> {
         "?" => Some(Err(ObdError::UnknownCommand)),
         "UNABLE TO CONNECT" => Some(Err(ObdError::UnableToConnect)),
         "SEARCHING..." | "" => None,
+        "CAN ERROR" => Some(Err(ObdError::CanError)),
         l if BUS_ERRORS.iter().any(|e| l.starts_with(e)) => {
             Some(Err(ObdError::BusError(l.to_string())))
         }
@@ -513,9 +513,17 @@ mod tests {
     }
 
     #[test]
-    fn given_can_error_when_parse_response_then_returns_bus_error() {
-        let expected: Result<Vec<u8>, ObdError> = Err(ObdError::BusError("CAN ERROR".to_string()));
+    fn given_can_error_when_parse_response_then_returns_can_error() {
+        let expected: Result<Vec<u8>, ObdError> = Err(ObdError::CanError);
         let actual: Result<Vec<u8>, ObdError> = parse_response("CAN ERROR\r\r>", Pid::EngineSpeed);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_data_error_when_parse_response_then_returns_bus_error() {
+        let expected: Result<Vec<u8>, ObdError> = Err(ObdError::BusError("DATA ERROR".to_string()));
+        let actual: Result<Vec<u8>, ObdError> = parse_response("DATA ERROR\r\r>", Pid::EngineSpeed);
 
         assert_eq!(actual, expected);
     }
