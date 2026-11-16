@@ -118,6 +118,7 @@ The unit tests use a mock transport, so they need no hardware. The serial tests 
 - [x] Run it on my ESP32-S3 over Wi-Fi against the emulator
 - [x] Run it on my ESP32-S3 over UART against the emulator, through a USB-UART adapter
 - [x] Run it on my ESP32-S3 talking to a real ELM327 over UART, bridged through the laptop
+- [x] Detect a silent adapter within one response timeout, and keep the ESP32-S3 polling after a failed session
 - [ ] Wire a UART ELM327 straight to the ESP32-S3
 
 ## License

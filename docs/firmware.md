@@ -21,7 +21,7 @@ UART0 is the console and the flashing port, so the firmware uses UART1, at 38400
 | GPIO18 (RX) | TX               |
 | GND         | GND              |
 
-The ESP32-S3 pins are 3.3 V only. Set the adapter to 3.3 V logic (mine, an FT232RL board, has a jumper for it) and leave its VCC pin unconnected.
+The ESP32-S3 pins are 3.3 V only. Set the adapter to 3.3 V logic (mine, an FT232RL board, has a jumper for it) and leave its VCC pin unconnected. On the bench the board and the adapter also share ground through the laptop's USB ports, so a missing GND wire goes unnoticed there, and wiring the board's GND to the adapter's VCC by mistake shorts the adapter's 3.3 V output, so it stops transmitting. In the car the GND wire is the only common ground.
 
 ## Running it
 
@@ -51,6 +51,7 @@ I (4177) firmware: ----------------
 
 - The first build downloads ESP-IDF v6.1 and its tools into `firmware/.embuild/`, so it takes a while.
 - Flash with `cargo espflash`, not `cargo run`. It writes the bootloader and partition table built by ESP-IDF together with the app. With Wi-Fi the app is bigger than 1 MB, so the firmware uses ESP-IDF's large single-app partition table.
+- If a session ends, because the AT setup fails, the reconnect attempts run out or no PID is left to poll, the firmware logs it and starts a new session 5 s later. The board never stops polling on its own.
 
 ## Examples
 
@@ -102,8 +103,12 @@ socat -d -d -v /dev/cu.usbserial-<FT232RL>,ispeed=38400,ospeed=38400,rawer,cloca
 
 - Over UART it logs the same readings as `wifi_tcp` against the same emulator, cycle by cycle, and reports when the vehicle stops responding (`engineoff`).
 - Over Wi-Fi it also reads the same values as the CLI, reconnects when the emulator is stopped and started again, and gives up on a connect after 5 s.
-- A UART has no connection, so it can't tell that the other side is gone. Unplugging the USB-UART adapter only makes the line go silent: every PID fails with `response timeout: ""`, the firmware never prints `connection lost`, and it keeps polling, with each cycle taking about 52 s (see Retries in [design](design.md#decisions)). Once the adapter answers again, the readings come back on their own, without a reset. Detecting a dead adapter sooner is still an open question.
-- Stopping the emulator for a few seconds doesn't show up in the log at all: the retries absorb it, and one cycle takes about 9 s instead of 1 s.
+- A UART has no connection, so a gone adapter only makes the line go silent. The driver counts a command that gets no byte at all within 2 s as a lost connection (see Silent adapter in [design](design.md#decisions)). With the emulator stopped:
+  - `connection lost: adapter sent nothing before the response timeout` 2.1 s after the first unanswered command.
+  - Four failed reconnect attempts, each a silent `ATI` (2.1 s) plus the backoff, and `session ended: ..., restarting in 5s` 25.5 s after the loss. There's no "attempt 5/5" line: the last attempt's error is the one `session ended` shows.
+  - Then a new session every 7.1 s (the 5 s wait plus the silent `ATI`), without a reset.
+  - With the emulator back, the next session read again 3.8 s after it started.
+- If the adapter answers again during the reconnect attempts, the session carries on and logs `reconnected`. A unit test covers that; on the board I only let the attempts run out.
 - The emulator doesn't exit when its serial device disappears: it keeps looping on read errors. After plugging the adapter back in, stop it and start it again.
-- On the 2012 Volkswagen, through the laptop bridge, it reads the same values as the CLI: idle around 780 rpm, revs up to 2432 rpm, one cycle about every 1.27 s. Unplugging the adapter from the car gives `CAN ERROR` on every PID for two cycles, then the readings come back without a reset. With the ignition off it reports that the vehicle is not responding, and it picks up again once the engine starts.
+- On the 2012 Volkswagen, through the laptop bridge, it reads the same values as the CLI: idle around 780 rpm, revs up to 2432 rpm, one cycle about every 1.27 s. Unplugging the adapter from the car gives `CAN ERROR` on every PID for two cycles, then the readings come back without a reset. Since then a cycle like that is reported as the vehicle not responding; I haven't re-checked it in the car. With the ignition off it reports that the vehicle is not responding, and it picks up again once the engine starts.
 - Every board reset puts one stray byte on the TX line. The emulator ignores it, but a real ELM327 keeps it until the next CR, so it read `<byte>ATZ` and answered `?`, and the session ended. The driver now sends a throwaway `ATI` before `ATZ` to absorb it (see [design](design.md#decisions)).
