@@ -32,6 +32,8 @@ pub enum ObdError {
     NoVehicleResponse,
     #[error("CAN error: no ECU acknowledged the request")]
     CanError,
+    #[error("adapter sent nothing before the response timeout")]
+    AdapterNotResponding,
 }
 
 impl ObdError {
@@ -49,7 +51,8 @@ impl ObdError {
             | ObdError::CanError => ObdErrorKind::Transient,
             ObdError::Transport(TransportError::Disconnected)
             | ObdError::Transport(TransportError::Io { .. })
-            | ObdError::UnexpectedResponse { .. } => ObdErrorKind::ConnectionLost,
+            | ObdError::UnexpectedResponse { .. }
+            | ObdError::AdapterNotResponding => ObdErrorKind::ConnectionLost,
         }
     }
 }
@@ -171,6 +174,14 @@ mod tests {
             response: String::new(),
         }
         .kind();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_adapter_not_responding_when_kind_then_returns_connection_lost() {
+        let expected: ObdErrorKind = ObdErrorKind::ConnectionLost;
+        let actual: ObdErrorKind = ObdError::AdapterNotResponding.kind();
 
         assert_eq!(actual, expected);
     }

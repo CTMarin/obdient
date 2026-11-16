@@ -339,6 +339,33 @@ mod tests {
     }
 
     #[test]
+    fn given_silent_adapter_in_a_cycle_when_run_then_reconnects_and_keeps_polling() {
+        // With a zero response timeout, a complete answer still wins over the deadline,
+        // and a single empty read is a silent adapter.
+        let mut answers: Vec<Result<Vec<u8>, TransportError>> = vec![Err(TransportError::Timeout)];
+        answers.extend(init_answers());
+        answers.push(unknown_command());
+        let silent_config: SessionConfig = SessionConfig {
+            response_timeout: Duration::ZERO,
+            ..config(vec![Pid::EngineSpeed])
+        };
+        let mut actual: Vec<Recorded> = vec![];
+        let _ = run(
+            MockTransport::new(reads(answers), vec![]),
+            &silent_config,
+            |event| actual.push(Recorded::from(event)),
+        );
+
+        let expected: Vec<Recorded> = vec![
+            Recorded::ConnectionLost(ObdError::AdapterNotResponding),
+            Recorded::Reconnected,
+            last_report_dropping(Pid::EngineSpeed),
+        ];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn given_failed_reconnect_attempt_when_run_then_reports_it_before_reconnected() {
         let mut answers: Vec<Result<Vec<u8>, TransportError>> =
             vec![Err(TransportError::Disconnected)];

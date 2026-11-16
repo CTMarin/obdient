@@ -85,10 +85,11 @@ impl<T: Transport> Elm327<T> {
     // The adapter buffers every byte until a carriage return. Noise on the line, such as
     // the byte an ESP32 pin emits while the board resets, would be merged with ATZ and
     // rejected with "?". A throwaway command absorbs that noise. Only transport errors
-    // stop here: any other failure leaves the driver desynced, so ATZ drains first.
+    // and a silent adapter stop here: a silent adapter would not answer ATZ either. Any
+    // other failure leaves the driver desynced, so ATZ drains first.
     fn clear_adapter_input(&mut self) -> Result<(), ObdError> {
         match self.send_command(SYNC_COMMAND) {
-            Err(error @ ObdError::Transport(_)) => Err(error),
+            Err(error @ (ObdError::Transport(_) | ObdError::AdapterNotResponding)) => Err(error),
             _ => Ok(()),
         }
     }
@@ -192,7 +193,11 @@ impl<T: Transport> Elm327<T> {
             } else {
                 self.response_timeout
             };
-            if started_at.elapsed() >= timeout {
+
+            let elapsed: Duration = started_at.elapsed();
+            if elapsed >= timeout && response_bytes.is_empty() {
+                return Err(ObdError::AdapterNotResponding);
+            } else if elapsed >= timeout {
                 return Err(ObdError::ResponseTimeout(Self::as_text(&response_bytes)));
             }
         }
@@ -334,11 +339,10 @@ mod tests {
     }
 
     #[test]
-    fn given_zero_timeout_and_no_data_when_send_command_then_returns_response_timeout_with_empty_text()
-     {
+    fn given_zero_timeout_and_no_data_when_send_command_then_returns_adapter_not_responding() {
         let mut elm: Elm327<MockTransport> = elm(vec![], Duration::ZERO);
 
-        let expected: Result<String, ObdError> = Err(ObdError::ResponseTimeout(String::new()));
+        let expected: Result<String, ObdError> = Err(ObdError::AdapterNotResponding);
         let actual: Result<String, ObdError> = elm.send_command("010C");
 
         assert_eq!(actual, expected);
@@ -745,6 +749,27 @@ mod tests {
     fn given_disconnect_on_sync_command_when_initialize_then_writes_only_sync_command() {
         let mut elm: Elm327<MockTransport> =
             elm(vec![Err(TransportError::Disconnected)], one_second());
+        let _ = elm.initialize();
+
+        let expected: &[u8] = b"ATI\r";
+        let actual: &[u8] = elm.transport.written();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_silent_adapter_when_initialize_then_returns_adapter_not_responding() {
+        let mut elm: Elm327<MockTransport> = elm(vec![], Duration::ZERO);
+
+        let expected: Result<(), ObdError> = Err(ObdError::AdapterNotResponding);
+        let actual: Result<(), ObdError> = elm.initialize();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn given_silent_adapter_when_initialize_then_writes_only_sync_command() {
+        let mut elm: Elm327<MockTransport> = elm(vec![], Duration::ZERO);
         let _ = elm.initialize();
 
         let expected: &[u8] = b"ATI\r";

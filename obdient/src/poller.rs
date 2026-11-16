@@ -178,6 +178,15 @@ mod tests {
         }
     }
 
+    /// An adapter that never sends a byte, with zero timeouts so the test does not wait.
+    fn silent_elm327() -> Elm327<MockTransport> {
+        Elm327::new(
+            MockTransport::new(vec![], vec![]),
+            Duration::ZERO,
+            Duration::ZERO,
+        )
+    }
+
     #[test]
     fn given_transient_error_then_valid_response_when_poll_cycle_then_returns_reading() {
         let mut poller: Poller<MockTransport> = poller(
@@ -245,6 +254,22 @@ mod tests {
         );
 
         let expected: Result<CycleReport, ObdError> = Err(ObdError::UnableToConnect);
+        let actual: Result<CycleReport, ObdError> = poller.poll_cycle();
+
+        assert_eq!(actual, expected);
+        assert_eq!(poller.elm327.transport().written(), b"010C\r");
+    }
+
+    #[test]
+    fn given_silent_adapter_when_poll_cycle_then_aborts_without_retry_or_next_pid() {
+        let mut poller: Poller<MockTransport> = Poller::new(
+            silent_elm327(),
+            vec![Pid::EngineSpeed, Pid::VehicleSpeed],
+            zero_backoff_policy(),
+            zero_backoff_policy(),
+        );
+
+        let expected: Result<CycleReport, ObdError> = Err(ObdError::AdapterNotResponding);
         let actual: Result<CycleReport, ObdError> = poller.poll_cycle();
 
         assert_eq!(actual, expected);
@@ -747,6 +772,20 @@ mod tests {
             wait_for_supported_pids(&mut elm327, Duration::ZERO, |_| {});
 
         assert_eq!(actual, expected);
+        assert_eq!(elm327.transport().written(), b"0100\r");
+    }
+
+    #[test]
+    fn given_silent_adapter_when_wait_for_supported_pids_then_returns_error_without_waiting() {
+        let mut elm327: Elm327<MockTransport> = silent_elm327();
+        let mut waits: usize = 0;
+
+        let expected: Result<SupportedPidsMask, ObdError> = Err(ObdError::AdapterNotResponding);
+        let actual: Result<SupportedPidsMask, ObdError> =
+            wait_for_supported_pids(&mut elm327, Duration::ZERO, |_| waits += 1);
+
+        assert_eq!(actual, expected);
+        assert_eq!(waits, 0);
         assert_eq!(elm327.transport().written(), b"0100\r");
     }
 
